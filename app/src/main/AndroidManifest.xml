@@ -1,46 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.audiodsp.engine">
 
-    <!-- Permissions required for AudioDSP Engine Pro -->
-    <!-- Required by Android AudioRecord with AudioPlaybackCaptureConfiguration -->
+    <!-- Audio effects / control de audio -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    
-    <!-- Foreground Service permissions for Android 14 (API 34) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    
-    <!-- Notifications for Android 13+ (API 33+) -->
+
+    <!-- Notificación del servicio -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Servicio en primer plano -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
     <application
-        android:name=".AudioDspApplication"
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="AudioDSP Engine Pro"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AudioDSPEnginePro">
+        android:theme="@style/Theme.AudioDSP">
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.AudioDSPEnginePro"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:theme="@style/Theme.AudioDSP">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
         </activity>
 
-        <!-- Foreground Service for real-time audio capture and DSP processing -->
         <service
             android:name=".audio.service.AudioDspService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|mediaProjection" />
+            android:foregroundServiceType="mediaPlayback"
+            tools:targetApi="34" />
 
     </application>
 
