@@ -73,19 +73,11 @@ class AudioDspService : Service() {
             _serviceError.asStateFlow()
     }
 
-    // ---------------------------------------------------------------------
-    // Binder
-    // ---------------------------------------------------------------------
-
     inner class LocalBinder : Binder() {
         fun getService(): AudioDspService = this@AudioDspService
     }
 
     private val binder = LocalBinder()
-
-    // ---------------------------------------------------------------------
-    // DSP / Audio components
-    // ---------------------------------------------------------------------
 
     val dspEngine: AudioDspEngine
         get() = (application as AudioDspApplication).dspEngine
@@ -98,10 +90,6 @@ class AudioDspService : Service() {
     private val audioOutput =
         AudioTrackOutput(sampleRate = 48000)
 
-    // ---------------------------------------------------------------------
-    // Runtime state
-    // ---------------------------------------------------------------------
-
     private var mediaProjection: android.media.projection.MediaProjection? = null
 
     private var audioThread: Thread? = null
@@ -110,10 +98,6 @@ class AudioDspService : Service() {
         AtomicBoolean(false)
 
     private var diagnosticCaptureMode = false
-
-    // ---------------------------------------------------------------------
-    // Service lifecycle
-    // ---------------------------------------------------------------------
 
     override fun onCreate() {
         super.onCreate()
@@ -179,8 +163,6 @@ class AudioDspService : Service() {
             }
 
             null -> {
-                // Android can recreate a START_STICKY service with a null intent.
-                // We intentionally do nothing in that situation.
                 Log.d(
                     TAG,
                     "Service restarted without an action."
@@ -188,19 +170,8 @@ class AudioDspService : Service() {
             }
         }
 
-        /*
-         * Do not request START_STICKY here.
-         *
-         * Audio processing should only run when explicitly started by the app.
-         * Recreating the service automatically could leave an unexpected
-         * foreground service running without the user's explicit action.
-         */
         return START_NOT_STICKY
     }
-
-    // ---------------------------------------------------------------------
-    // Native Android DSP
-    // ---------------------------------------------------------------------
 
     private fun startNativeEffect() {
 
@@ -208,10 +179,8 @@ class AudioDspService : Service() {
 
         diagnosticCaptureMode = false
 
-        // Stop diagnostic pipeline first.
         stopCapturePipeline()
 
-        // Make sure the diagnostic MediaProjection is not active.
         mediaProjection?.stop()
         mediaProjection = null
 
@@ -231,9 +200,6 @@ class AudioDspService : Service() {
                 return
             }
 
-            /*
-             * Synchronize the native effect with the current DSP settings.
-             */
             if (!nativeEffect.sync(dspEngine)) {
 
                 fail(
@@ -258,10 +224,6 @@ class AudioDspService : Service() {
         }
     }
 
-    /**
-     * Synchronizes the current AudioDspEngine settings with the
-     * native Android audio effect.
-     */
     fun syncNativeEffect() {
 
         if (!nativeEffect.isActive) {
@@ -292,10 +254,6 @@ class AudioDspService : Service() {
         updateNotification()
     }
 
-    // ---------------------------------------------------------------------
-    // Bypass
-    // ---------------------------------------------------------------------
-
     private fun toggleBypass() {
 
         dspEngine.isBypassGlobal =
@@ -313,10 +271,6 @@ class AudioDspService : Service() {
         updateNotification()
     }
 
-    // ---------------------------------------------------------------------
-    // Diagnostic MediaProjection DSP
-    // ---------------------------------------------------------------------
-
     private fun startCaptureDiagnostic(
         resultCode: Int,
         resultData: Intent
@@ -326,7 +280,6 @@ class AudioDspService : Service() {
 
         diagnosticCaptureMode = true
 
-        // Native effect and diagnostic pipeline must never run together.
         nativeEffect.stop()
 
         stopCapturePipeline()
@@ -406,10 +359,6 @@ class AudioDspService : Service() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Foreground service
-    // ---------------------------------------------------------------------
-
     private fun startForegroundForMediaPlayback() {
 
         val notification = buildNotification()
@@ -451,10 +400,6 @@ class AudioDspService : Service() {
             )
         }
     }
-
-    // ---------------------------------------------------------------------
-    // Notification
-    // ---------------------------------------------------------------------
 
     private fun buildNotification(): Notification {
 
@@ -562,10 +507,6 @@ class AudioDspService : Service() {
         )
     }
 
-    // ---------------------------------------------------------------------
-    // Diagnostic audio thread
-    // ---------------------------------------------------------------------
-
     private fun startAudioThread() {
 
         if (isLoopRunning.get()) {
@@ -587,12 +528,6 @@ class AudioDspService : Service() {
                         android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
                     )
 
-                    /*
-                     * 512 stereo frames.
-                     *
-                     * Stereo PCM16 therefore contains:
-                     * 512 * 2 = 1024 samples.
-                     */
                     val frameSize = 512
                     val sampleCount = frameSize * 2
 
@@ -618,10 +553,6 @@ class AudioDspService : Service() {
                             break
                         }
 
-                        /*
-                         * PlaybackCaptureManager is expected to return
-                         * interleaved stereo PCM16 samples.
-                         */
                         val frames = read / 2
 
                         if (frames <= 0) {
@@ -639,11 +570,6 @@ class AudioDspService : Service() {
                                 input[i * 2 + 1] / 32768f
                         }
 
-                        /*
-                         * REAL SOFTWARE DSP PROCESSING.
-                         *
-                         * AudioDspEngine performs the actual processing.
-                         */
                         dspEngine.processBuffer(buffer)
 
                         for (i in 0 until frames) {
@@ -685,9 +611,9 @@ class AudioDspService : Service() {
                         e
                     )
 
-                    _serviceError.postValue(
+                    // MutableStateFlow uses .value; postValue() belongs to LiveData.
+                    _serviceError.value =
                         "Audio processing error: ${e.localizedMessage}"
-                    )
 
                 } finally {
 
@@ -706,10 +632,6 @@ class AudioDspService : Service() {
                 start()
             }
     }
-
-    // ---------------------------------------------------------------------
-    // Shutdown
-    // ---------------------------------------------------------------------
 
     private fun stopCapturePipeline() {
 
@@ -773,10 +695,6 @@ class AudioDspService : Service() {
         stopSelf()
     }
 
-    // ---------------------------------------------------------------------
-    // Error handling
-    // ---------------------------------------------------------------------
-
     private fun fail(message: String) {
 
         Log.e(
@@ -799,10 +717,6 @@ class AudioDspService : Service() {
 
         stopSelf()
     }
-
-    // ---------------------------------------------------------------------
-    // Destroy
-    // ---------------------------------------------------------------------
 
     override fun onDestroy() {
 
