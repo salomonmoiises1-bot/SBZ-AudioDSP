@@ -1,0 +1,46 @@
+name: Android CI - AudioDSP Engine Pro
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android 14 Debug APK and run DSP tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The original project did not contain gradlew/gradle-wrapper.jar.
+      # setup-gradle installs the requested Gradle distribution directly,
+      # so the repository can build from GitHub without a local wrapper.
+      - name: Set up Gradle 8.2.2
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.2.2'
+          cache-provider: basic
+
+      - name: Run unit tests
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioDSP-Engine-Pro-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
