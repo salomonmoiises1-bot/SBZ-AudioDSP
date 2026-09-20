@@ -1,212 +1,189 @@
-package com.audiodsp.enginepro.ui
+package com.audiodsp.enginepro.dsp.core
 
-import android.content.Intent
-import android.media.projection.MediaProjectionManager
-import android.os.Build
-import android.os.Bundle
-import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.core.content.ContextCompat
-import com.audiodsp.enginepro.audio.service.AudioDspService
-import com.audiodsp.enginepro.ui.screens.MainScreen
-import com.audiodsp.enginepro.ui.theme.AudioDSPEngineProTheme
+import com.audiodsp.enginepro.dsp.dynamics.AutoGainProcessor
+import com.audiodsp.enginepro.dsp.dynamics.LimiterProcessor
+import com.audiodsp.enginepro.dsp.dynamics.MdrcProcessor
+import com.audiodsp.enginepro.dsp.effects.BassBoostProcessor
+import com.audiodsp.enginepro.dsp.effects.ToneProcessor
+import com.audiodsp.enginepro.dsp.effects.VirtualizerProcessor
+import com.audiodsp.enginepro.dsp.equalizer.Equalizer32Band
+import com.audiodsp.enginepro.dsp.metering.MeterProcessor
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
 
-class MainActivity : ComponentActivity() {
+/**
 
-    companion object {
-        private const val REQUEST_MEDIA_PROJECTION = 5001
-    }
+The Master Audio DSP Engine.
 
-    override fun onCreate(
-        savedInstanceState: Bundle?
-    ) {
-        super.onCreate(savedInstanceState)
+Orchestrates the full modular audio chain over PCM audio:
 
-        setContent {
-            AudioDSPEngineProTheme {
+INPUT
 
-                MainScreen(
-                    onStartRequested = {
-                        requestAudioCapture()
-                    },
-                    onStopRequested = {
-                        stopAudioService()
-                    }
-                )
-            }
-        }
-    }
+↓
 
-    /**
-     * Requests Android's official MediaProjection permission.
-     *
-     * This is required for AudioPlaybackCapture on Android 10+
-     * and is the entry point of the software DSP pipeline.
-     */
-    private fun requestAudioCapture() {
+Pre-Gain
 
-        try {
+↓
 
-            val projectionManager =
-                getSystemService(
-                    MEDIA_PROJECTION_SERVICE
-                ) as MediaProjectionManager
+Bass Boost
 
-            val captureIntent =
-                projectionManager.createScreenCaptureIntent()
+↓
 
-            startActivityForResult(
-                captureIntent,
-                REQUEST_MEDIA_PROJECTION
-            )
+Tone (Bass, Mid, Treble)
 
-        } catch (e: Exception) {
+↓
 
-            Toast.makeText(
-                this,
-                "No se pudo solicitar la captura de audio: " +
-                    (e.localizedMessage ?: "Error desconocido"),
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
+32-Band EQ
 
-    @Deprecated(
-        "Deprecated in AndroidX Activity, but retained for compatibility " +
-            "with the current project structure."
-    )
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
+↓
 
-        super.onActivityResult(
-            requestCode,
-            resultCode,
-            data
-        )
+MDRC (Multi-band Dynamic Range Compression)
 
-        if (
-            requestCode !=
-            REQUEST_MEDIA_PROJECTION
-        ) {
-            return
-        }
+↓
 
-        if (
-            resultCode == RESULT_OK &&
-            data != null
-        ) {
+AutoGain (AGC)
 
-            startSoftwareDspService(
-                resultCode,
-                data
-            )
+↓
 
-        } else {
+Virtualizer (Haas & Spatial Stereo Widening)
 
-            Toast.makeText(
-                this,
-                "La captura de audio fue cancelada.",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
+↓
 
-    /**
-     * Starts the real Android 14 software DSP pipeline.
-     */
-    private fun startSoftwareDspService(
-        resultCode: Int,
-        resultData: Intent
-    ) {
+Master Gain
 
-        val serviceIntent =
-            Intent(
-                this,
-                AudioDspService::class.java
-            ).apply {
+↓
 
-                action =
-                    AudioDspService
-                        .ACTION_START_CAPTURE_DIAGNOSTIC
+Balance (Constant-Power Pan Law)
 
-                putExtra(
-                    AudioDspService.EXTRA_RESULT_CODE,
-                    resultCode
-                )
+↓
 
-                putExtra(
-                    AudioDspService.EXTRA_RESULT_DATA,
-                    resultData
-                )
-            }
+Limiter (Peak Brickwall Limiter)
 
-        try {
+↓
 
-            if (
-                Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.O
-            ) {
+Meter Processor (Telemetry analysis)
 
-                ContextCompat.startForegroundService(
-                    this,
-                    serviceIntent
-                )
+↓
 
-            } else {
+OUTPUT
+*/
+class AudioDspEngine(
+val sampleRate: Float = 48000f
+) {
+// Processors
+val bassBoost = BassBoostProcessor(sampleRate)
+val tone = ToneProcessor(sampleRate)
+val equalizer32 = Equalizer32Band(sampleRate)
+val mdrc = MdrcProcessor(sampleRate)
+val autoGain = AutoGainProcessor(sampleRate)
+val virtualizer = VirtualizerProcessor(sampleRate)
+val limiter = LimiterProcessor(sampleRate)
+val meter = MeterProcessor()
 
-                startService(
-                    serviceIntent
-                )
-            }
 
-        } catch (e: Exception) {
+// Global Controls  
+@Volatile  
+var isBypassGlobal: Boolean = false  
 
-            Toast.makeText(
-                this,
-                "No se pudo iniciar el DSP: " +
-                    (
-                        e.localizedMessage
-                            ?: "Error desconocido"
-                    ),
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
+@Volatile  
+var masterGainDb: Float = 0.0f  
+    set(value) {  
+        field = value.coerceIn(-36.0f, 12.0f)  
+        masterGainLinear = 10.0.pow(field / 20.0).toFloat()  
+    }  
 
-    private fun stopAudioService() {
+private var masterGainLinear: Float = 1.0f  
 
-        val serviceIntent =
-            Intent(
-                this,
-                AudioDspService::class.java
-            ).apply {
+/**  
+ * Stereo Balance:  
+ * -1.0f = 100% Left (Right muted)  
+ *  0.0f = Center (0 dB attenuation)  
+ * +1.0f = 100% Right (Left muted)  
+ */  
+@Volatile  
+var balance: Float = 0.0f  
+    set(value) {  
+        field = value.coerceIn(-1.0f, 1.0f)  
+        computeBalanceGains()  
+    }  
 
-                action =
-                    AudioDspService
-                        .ACTION_STOP_PROCESSING
-            }
+private var balanceGainL: Float = 1.0f  
+private var balanceGainR: Float = 1.0f  
 
-        try {
+init {  
+    computeBalanceGains()  
+}  
 
-            startService(
-                serviceIntent
-            )
+private fun computeBalanceGains() {  
+    // -3dB constant power panning  
+    val angle = (balance + 1.0f) * 0.25f * PI.toFloat() // 0 to PI/2  
+    balanceGainL = (cos(angle) * 1.4142f).coerceIn(0f, 1f)  
+    balanceGainR = (sin(angle) * 1.4142f).coerceIn(0f, 1f)  
+}  
 
-        } catch (e: Exception) {
+/**  
+ * Processes one audio buffer through the full DSP chain.  
+ * Guaranteed zero heap allocations in the audio thread loop.  
+ */  
+fun processBuffer(buffer: AudioBuffer) {  
+    val frames = buffer.frameCount  
+    if (frames <= 0) return  
 
-            Toast.makeText(
-                this,
-                "No se pudo detener el DSP: " +
-                    (
-                        e.localizedMessage
-                            ?: "Error desconocido"
-                    ),
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
+    if (isBypassGlobal) {  
+        // Bypass mode: Audio passes directly without DSP alteration,  
+        // while preserving filter state memory and analyzing meters.  
+        meter.analyze(buffer)  
+        return  
+    }  
+
+    // 1. Bass Boost  
+    bassBoost.process(buffer)  
+
+    // 2. Tone (Bass, Mid, Treble)  
+    tone.process(buffer)  
+
+    // 3. 32-Band Graphic EQ (Includes Pre-Gain inside Equalizer32Band)  
+    equalizer32.process(buffer)  
+
+    // 4. MDRC (Multi-band Dynamic Range Compression)  
+    mdrc.process(buffer)  
+
+    // 5. AutoGain (AGC Leveler)  
+    autoGain.process(buffer)  
+
+    // 6. Virtualizer (Spatial Stereo Widener)  
+    virtualizer.process(buffer)  
+
+    // 7. Master Gain & Balance  
+    val left = buffer.left  
+    val right = buffer.right  
+    val mg = masterGainLinear  
+    val bL = balanceGainL * mg  
+    val bR = balanceGainR * mg  
+
+    for (i in 0 until frames) {  
+        left[i] *= bL  
+        right[i] *= bR  
+    }  
+
+    // 8. Final Mastering Limiter (Brickwall peak ceiling)  
+    limiter.process(buffer)  
+
+    // 9. Real-time Telemetry Metering (Peak, RMS, Clipping, Limiting)  
+    meter.analyze(buffer)  
+}  
+
+fun resetAllStates() {  
+    bassBoost.resetStates()  
+    tone.resetStates()  
+    equalizer32.resetStates()  
+    mdrc.resetStates()  
+    autoGain.resetStates()  
+    virtualizer.resetStates()  
+    limiter.resetStates()  
+    meter.reset()  
+}
+
 }
