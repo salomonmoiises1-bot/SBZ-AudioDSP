@@ -37,8 +37,6 @@ import androidx.compose.ui.unit.sp
 import com.audiodsp.enginepro.AudioDspApplication
 import com.audiodsp.enginepro.audio.service.AudioDspService
 import com.audiodsp.enginepro.data.preferences.DspPreferencesRepository
-import com.audiodsp.enginepro.data.presets.DspPreset
-import com.audiodsp.enginepro.dsp.metering.MeterProcessor
 import com.audiodsp.enginepro.ui.components.ControlsView
 import com.audiodsp.enginepro.ui.components.EffectsView
 import com.audiodsp.enginepro.ui.components.EqualizerView
@@ -52,6 +50,7 @@ import com.audiodsp.enginepro.ui.theme.DspSurface
 import com.audiodsp.enginepro.ui.theme.DspTextMuted
 import com.audiodsp.enginepro.ui.theme.DspTextPrimary
 import com.audiodsp.enginepro.ui.theme.DspTextSecondary
+import com.audiodsp.enginepro.dsp.metering.MeterProcessor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -63,48 +62,107 @@ fun MainScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val repository = remember { DspPreferencesRepository(context) }
+    val repository = remember {
+        DspPreferencesRepository(context)
+    }
     val scope = rememberCoroutineScope()
 
-    // Service state
-    val isServiceActive by AudioDspService.isServiceActive.collectAsState()
-    val serviceError by AudioDspService.serviceError.collectAsState()
+    /*
+     * Real service state.
+     */
+    val isServiceActive by
+        AudioDspService.isServiceActive.collectAsState()
 
-    // One shared engine for UI, persistence and the audio service.
-    val activeEngine = (context.applicationContext as AudioDspApplication).dspEngine
+    val serviceError by
+        AudioDspService.serviceError.collectAsState()
 
-    // State triggers to force recomposition when params update
-    var dspStateVersion by remember { mutableIntStateOf(0) }
-    var selectedPresetId by remember { mutableStateOf("flat") }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    /*
+     * The application owns the single DSP engine instance.
+     *
+     * The audio service and the UI use the same engine instance.
+     */
+    val activeEngine =
+        (context.applicationContext as AudioDspApplication).dspEngine
 
-    // Telemetry polling at 30 fps
+    var selectedPresetId by remember {
+        mutableStateOf("flat")
+    }
+
+    var selectedTab by remember {
+        mutableIntStateOf(0)
+    }
+
+    /*
+     * Live audio meters.
+     */
     var liveMeters by remember {
         mutableStateOf(
             MeterProcessor.MeterValues(
-                0f, 0f, 0f, 0f,
-                -96f, -96f, -96f, -96f,
-                isClippingL = false, isClippingR = false
+                0f,
+                0f,
+                0f,
+                0f,
+                -96f,
+                -96f,
+                -96f,
+                -96f,
+                isClippingL = false,
+                isClippingR = false
             )
         )
     }
-    var isLimitingActive by remember { mutableStateOf(false) }
 
+    var isLimitingActive by remember {
+        mutableStateOf(false)
+    }
+
+    /*
+     * Refresh meters at approximately 30 FPS.
+     */
     LaunchedEffect(isServiceActive) {
+
         while (isActive) {
-            val engine = AudioDspService.getInstance()?.dspEngine ?: activeEngine
-            liveMeters = engine.meter.currentValues
-            isLimitingActive = engine.limiter.isLimitingActive
-            delay(33) // ~30 fps UI refresh rate
+
+            val engine =
+                AudioDspService.getInstance()?.dspEngine
+                    ?: activeEngine
+
+            liveMeters =
+                engine.meter.currentValues
+
+            isLimitingActive =
+                engine.limiter.isLimitingActive
+
+            delay(33)
         }
     }
 
-    // Save preferences helper
+    /*
+     * Save the current DSP configuration.
+     *
+     * IMPORTANT:
+     * There is intentionally NO call to
+     * syncNativeEffect().
+     *
+     * The application now uses the software DSP pipeline:
+     *
+     * MediaProjection
+     *      ↓
+     * AudioPlaybackCapture
+     *      ↓
+     * AudioRecord
+     *      ↓
+     * AudioDspEngine
+     *      ↓
+     * AudioTrack
+     */
     val persistState: () -> Unit = {
-        dspStateVersion++
-        AudioDspService.getInstance()?.syncNativeEffect()
+
         scope.launch {
-            repository.saveEngineState(activeEngine, selectedPresetId)
+            repository.saveEngineState(
+                activeEngine,
+                selectedPresetId
+            )
         }
     }
 
@@ -112,20 +170,33 @@ fun MainScreen(
         modifier = modifier.fillMaxSize(),
         containerColor = DspBackground
     ) { innerPadding ->
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .verticalScroll(rememberScrollState())
+                .padding(
+                    horizontal = 14.dp,
+                    vertical = 10.dp
+                )
+                .verticalScroll(
+                    rememberScrollState()
+                )
         ) {
-            // App Header
+
+            /*
+             * Application header.
+             */
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
+                verticalAlignment =
+                    Alignment.CenterVertically
             ) {
+
                 Column {
+
                     Text(
                         text = "AudioDSP Engine Pro",
                         fontSize = 18.sp,
@@ -133,8 +204,10 @@ fun MainScreen(
                         fontWeight = FontWeight.Bold,
                         color = DspTextPrimary
                     )
+
                     Text(
-                        text = "Native Android 14 • 32-Band EQ + MDRC + Limiter",
+                        text =
+                            "Android 14 • Software DSP • 32-Band EQ + MDRC + Limiter",
                         fontSize = 10.sp,
                         color = DspPrimary
                     )
@@ -142,13 +215,23 @@ fun MainScreen(
 
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(
+                            RoundedCornerShape(6.dp)
+                        )
                         .background(DspSurface)
-                        .border(0.5.dp, DspBorder, RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .border(
+                            0.5.dp,
+                            DspBorder,
+                            RoundedCornerShape(6.dp)
+                        )
+                        .padding(
+                            horizontal = 8.dp,
+                            vertical = 4.dp
+                        )
                 ) {
+
                     Text(
-                        text = "API 34 NATIVE",
+                        text = "API 34 SOFTWARE",
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
@@ -157,123 +240,266 @@ fun MainScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
 
-            // 1. Real-time Telemetry & VU Meters
+            /*
+             * Real-time meters.
+             */
             MeterView(
                 meterValues = liveMeters,
                 isLimitingActive = isLimitingActive
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
 
-            // 2. Main Controls & Master Gain
+            /*
+             * Main controls.
+             */
             ControlsView(
                 engine = activeEngine,
                 isProcessingActive = isServiceActive,
                 errorMessage = serviceError,
-                onStartRequested = onStartRequested,
-                onStopRequested = onStopRequested,
+
+                onStartRequested =
+                    onStartRequested,
+
+                onStopRequested =
+                    onStopRequested,
+
                 onBypassToggled = {
-                    activeEngine.isBypassGlobal = !activeEngine.isBypassGlobal
+
+                    activeEngine.isBypassGlobal =
+                        !activeEngine.isBypassGlobal
+
                     persistState()
                 },
-                onParamChanged = persistState
+
+                onParamChanged =
+                    persistState
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(
+                modifier = Modifier.height(14.dp)
+            )
 
-            // Navigation Tabs
-            val tabs = listOf("32-BAND EQ", "MDRC DYNAMICS", "EFFECTS & TONE", "PRESETS")
+            /*
+             * DSP navigation.
+             */
+            val tabs = listOf(
+                "32-BAND EQ",
+                "MDRC DYNAMICS",
+                "EFFECTS & TONE",
+                "PRESETS"
+            )
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(
+                        RoundedCornerShape(8.dp)
+                    )
                     .background(DspSurface)
-                    .border(1.dp, DspBorder, RoundedCornerShape(8.dp))
+                    .border(
+                        1.dp,
+                        DspBorder,
+                        RoundedCornerShape(8.dp)
+                    )
                     .padding(3.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement =
+                    Arrangement.SpaceBetween
             ) {
+
                 tabs.forEachIndexed { index, title ->
-                    val isSelected = selectedTab == index
+
+                    val isSelected =
+                        selectedTab == index
+
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isSelected) DspPrimary.copy(alpha = 0.2f) else DspSurface)
-                            .border(
-                                0.5.dp,
-                                if (isSelected) DspPrimary else androidx.compose.ui.graphics.Color.Transparent,
+                            .clip(
                                 RoundedCornerShape(6.dp)
                             )
-                            .clickable { selectedTab = index }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
+                            .background(
+                                if (isSelected) {
+                                    DspPrimary.copy(
+                                        alpha = 0.2f
+                                    )
+                                } else {
+                                    DspSurface
+                                }
+                            )
+                            .border(
+                                0.5.dp,
+                                if (isSelected) {
+                                    DspPrimary
+                                } else {
+                                    androidx.compose.ui.graphics.Color.Transparent
+                                },
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable {
+                                selectedTab = index
+                            }
+                            .padding(
+                                vertical = 8.dp
+                            ),
+                        contentAlignment =
+                            Alignment.Center
                     ) {
+
                         Text(
                             text = title,
                             fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) DspPrimary else DspTextMuted,
+                            fontFamily =
+                                FontFamily.Monospace,
+                            fontWeight =
+                                if (isSelected) {
+                                    FontWeight.Bold
+                                } else {
+                                    FontWeight.Medium
+                                },
+                            color =
+                                if (isSelected) {
+                                    DspPrimary
+                                } else {
+                                    DspTextMuted
+                                },
                             maxLines = 1
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
 
-            // Tab Content
+            /*
+             * Selected DSP section.
+             */
             when (selectedTab) {
+
+                /*
+                 * 32-band equalizer.
+                 */
                 0 -> {
+
                     EqualizerView(
-                        equalizer = activeEngine.equalizer32,
-                        onBandGainChange = { bandIndex, gainDb ->
-                            activeEngine.equalizer32.setBandGain(bandIndex, gainDb)
-                            selectedPresetId = "custom"
+                        equalizer =
+                            activeEngine.equalizer32,
+
+                        onBandGainChange = {
+                                bandIndex,
+                                gainDb ->
+
+                            activeEngine
+                                .equalizer32
+                                .setBandGain(
+                                    bandIndex,
+                                    gainDb
+                                )
+
+                            selectedPresetId =
+                                "custom"
+
                             persistState()
                         },
-                        onPreGainChange = { preGain ->
-                            activeEngine.equalizer32.setPreGain(preGain)
+
+                        onPreGainChange = {
+                                preGain ->
+
+                            activeEngine
+                                .equalizer32
+                                .setPreGain(
+                                    preGain
+                                )
+
                             persistState()
                         },
+
                         onResetFlat = {
-                            activeEngine.equalizer32.resetFlat()
-                            selectedPresetId = "flat"
+
+                            activeEngine
+                                .equalizer32
+                                .resetFlat()
+
+                            selectedPresetId =
+                                "flat"
+
                             persistState()
                         }
                     )
                 }
+
+                /*
+                 * MDRC dynamics.
+                 */
                 1 -> {
+
                     MdrcView(
                         mdrc = activeEngine.mdrc,
-                        onEnabledChange = { enabled ->
-                            activeEngine.mdrc.isEnabled = enabled
+
+                        onEnabledChange = {
+                                enabled ->
+
+                            activeEngine
+                                .mdrc
+                                .isEnabled =
+                                enabled
+
                             persistState()
                         },
-                        onParamChange = persistState
+
+                        onParamChange =
+                            persistState
                     )
                 }
+
+                /*
+                 * Effects and tone.
+                 */
                 2 -> {
+
                     EffectsView(
                         engine = activeEngine,
-                        onParamChanged = persistState
+                        onParamChanged =
+                            persistState
                     )
                 }
+
+                /*
+                 * Presets.
+                 */
                 3 -> {
+
                     PresetsView(
-                        selectedPresetId = selectedPresetId,
-                        onPresetSelected = { preset ->
-                            selectedPresetId = preset.id
-                            preset.applyToEngine(activeEngine)
+                        selectedPresetId =
+                            selectedPresetId,
+
+                        onPresetSelected = {
+                                preset ->
+
+                            selectedPresetId =
+                                preset.id
+
+                            preset.applyToEngine(
+                                activeEngine
+                            )
+
                             persistState()
                         }
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
         }
     }
 }
