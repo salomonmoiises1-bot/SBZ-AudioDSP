@@ -2,14 +2,17 @@ package com.audiodsp.enginepro.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -28,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -60,7 +64,7 @@ fun EqualizerView(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = DspSurface),
         shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DspBorder)
+        border = BorderStroke(1.dp, DspBorder)
     ) {
         Column(
             modifier = Modifier
@@ -92,9 +96,9 @@ fun EqualizerView(
                 OutlinedButton(
                     onClick = onResetFlat,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = DspPrimary),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DspBorder),
+                    border = BorderStroke(1.dp, DspBorder),
                     shape = RoundedCornerShape(6.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(text = "RESET FLAT", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                 }
@@ -238,7 +242,7 @@ fun BandFaderColumn(
                 modifier = Modifier
                     .width(120.dp)
                     .height(28.dp)
-                    .androidx.compose.ui.draw.rotate(-90f)
+                    .rotate(-90f)
             )
         }
 
@@ -247,11 +251,11 @@ fun BandFaderColumn(
         // Reset individual band on click
         OutlinedButton(
             onClick = onResetBand,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+            contentPadding = PaddingValues(0.dp),
             modifier = Modifier
                 .width(36.dp)
                 .height(18.dp),
-            border = androidx.compose.foundation.BorderStroke(0.5.dp, DspBorder),
+            border = BorderStroke(0.5.dp, DspBorder),
             shape = RoundedCornerShape(3.dp)
         ) {
             Text(text = "0", fontSize = 8.sp, fontFamily = FontFamily.Monospace, color = DspTextMuted)
