@@ -22,13 +22,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # The original project did not contain gradlew/gradle-wrapper.jar.
-      # setup-gradle installs the requested Gradle distribution directly,
-      # so the repository can build from GitHub without a local wrapper.
-      - name: Set up Gradle 8.2.2
+      - name: Set up Gradle 8.11
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '8.2.2'
+          gradle-version: '8.11'
           cache-provider: basic
 
       - name: Run unit tests
