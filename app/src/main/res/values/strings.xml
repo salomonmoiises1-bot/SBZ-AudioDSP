@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">AudioDSP Engine Pro</string>
+    <string name="dsp_service_channel_name">AudioDSP Engine Service</string>
+    <string name="dsp_service_channel_desc">Active background audio processing service</string>
+    <string name="dsp_running_title">AudioDSP Engine Pro Active</string>
+    <string name="dsp_running_content">Processing real-time 32-band audio stream</string>
+    <string name="dsp_stop_action">Stop</string>
+    <string name="dsp_bypass_action">Bypass</string>
+</resources>

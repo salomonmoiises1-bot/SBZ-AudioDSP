@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="dsp_black">#0A0D14</color>
+    <color name="dsp_surface">#121622</color>
+    <color name="dsp_primary">#00E5FF</color>
+    <color name="dsp_accent">#7C4DFF</color>
+    <color name="dsp_success">#00E676</color>
+    <color name="dsp_warning">#FFD600</color>
+    <color name="dsp_danger">#FF1744</color>
+</resources>
