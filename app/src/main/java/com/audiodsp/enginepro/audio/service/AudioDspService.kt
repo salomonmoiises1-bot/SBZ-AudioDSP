@@ -14,7 +14,6 @@ import androidx.core.app.NotificationCompat
 import com.audiodsp.enginepro.AudioDspApplication
 import com.audiodsp.enginepro.R
 import com.audiodsp.enginepro.audio.capture.PlaybackCaptureManager
-import com.audiodsp.enginepro.audio.effects.NativeSystemEffectController
 import com.audiodsp.enginepro.audio.output.AudioTrackOutput
 import com.audiodsp.enginepro.dsp.core.AudioBuffer
 import com.audiodsp.enginepro.dsp.core.AudioDspEngine
@@ -25,26 +24,47 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Long-lived audio DSP service.
+ * Main audio DSP service.
  *
- * Main mode:
- *   Android native audio effect / output processing.
+ * Android 14 software DSP pipeline:
  *
- * Diagnostic mode:
- *   MediaProjection -> AudioRecord -> DSP -> AudioTrack.
+ * MediaProjection
+ *      ↓
+ * AudioPlaybackCapture
+ *      ↓
+ * AudioRecord
+ *      ↓
+ * AudioDspEngine
+ *      ↓
+ * 32-band EQ / MDRC / Tone / Limiter / etc.
+ *      ↓
+ * AudioTrack
  *
- * The diagnostic pipeline is NOT the normal processing path because
- * Android may continue playing the original source simultaneously,
- * resulting in dry + processed audio.
+ * NativeSystemEffectController is intentionally NOT used here.
+ *
+ * This avoids Android's global output AudioEffect path, which can be
+ * rejected on Android 14 with:
+ *
+ * "AudioEffect: invalid parameter operation"
  */
 class AudioDspService : Service() {
 
     companion object {
+
         private const val TAG = "AudioDspService"
 
-        const val CHANNEL_ID = "audio_dsp_engine_pro_channel"
+        const val CHANNEL_ID =
+            "audio_dsp_engine_pro_channel"
+
         const val NOTIFICATION_ID = 1001
 
+        /*
+         * Kept for compatibility with the existing UI.
+         *
+         * IMPORTANT:
+         * This action no longer starts a global Android AudioEffect.
+         * The actual DSP processing uses the capture pipeline.
+         */
         const val ACTION_START_NATIVE =
             "com.audiodsp.enginepro.action.START_NATIVE"
 
@@ -57,49 +77,65 @@ class AudioDspService : Service() {
         const val ACTION_TOGGLE_BYPASS =
             "com.audiodsp.enginepro.action.TOGGLE_BYPASS"
 
-        const val EXTRA_RESULT_CODE = "extra_result_code"
-        const val EXTRA_RESULT_DATA = "extra_result_data"
+        const val EXTRA_RESULT_CODE =
+            "extra_result_code"
+
+        const val EXTRA_RESULT_DATA =
+            "extra_result_data"
 
         private var instance: AudioDspService? = null
 
-        fun getInstance(): AudioDspService? = instance
+        fun getInstance(): AudioDspService? =
+            instance
 
-        private val _isServiceActive = MutableStateFlow(false)
+        private val _isServiceActive =
+            MutableStateFlow(false)
+
         val isServiceActive: StateFlow<Boolean> =
             _isServiceActive.asStateFlow()
 
-        private val _serviceError = MutableStateFlow<String?>(null)
+        private val _serviceError =
+            MutableStateFlow<String?>(null)
+
         val serviceError: StateFlow<String?> =
             _serviceError.asStateFlow()
     }
 
     inner class LocalBinder : Binder() {
-        fun getService(): AudioDspService = this@AudioDspService
+
+        fun getService(): AudioDspService =
+            this@AudioDspService
     }
 
-    private val binder = LocalBinder()
+    private val binder =
+        LocalBinder()
 
     val dspEngine: AudioDspEngine
-        get() = (application as AudioDspApplication).dspEngine
-
-    private val nativeEffect = NativeSystemEffectController()
+        get() =
+            (application as AudioDspApplication).dspEngine
 
     private val captureManager =
-        PlaybackCaptureManager(sampleRate = 48000)
+        PlaybackCaptureManager(
+            sampleRate = 48000
+        )
 
     private val audioOutput =
-        AudioTrackOutput(sampleRate = 48000)
+        AudioTrackOutput(
+            sampleRate = 48000
+        )
 
-    private var mediaProjection: android.media.projection.MediaProjection? = null
+    private var mediaProjection:
+            android.media.projection.MediaProjection? = null
 
     private var audioThread: Thread? = null
 
     private val isLoopRunning =
         AtomicBoolean(false)
 
-    private var diagnosticCaptureMode = false
+    private var captureMode = false
 
     override fun onCreate() {
+
         super.onCreate()
 
         instance = this
@@ -107,10 +143,16 @@ class AudioDspService : Service() {
         _isServiceActive.value = false
         _serviceError.value = null
 
-        Log.d(TAG, "AudioDspService created")
+        Log.d(
+            TAG,
+            "AudioDspService created"
+        )
     }
 
-    override fun onBind(intent: Intent?): IBinder {
+    override fun onBind(
+        intent: Intent?
+    ): IBinder {
+
         return binder
     }
 
@@ -122,32 +164,73 @@ class AudioDspService : Service() {
 
         when (intent?.action) {
 
+            /*
+             * The old implementation attempted to create a global
+             * Android AudioEffect here.
+             *
+             * That path is intentionally disabled.
+             *
+             * The real processing path is MediaProjection ->
+             * AudioRecord -> DSP -> AudioTrack.
+             */
             ACTION_START_NATIVE -> {
-                startNativeEffect()
+
+                Log.d(
+                    TAG,
+                    "ACTION_START_NATIVE received."
+                )
+
+                val resultCode =
+                    intent.getIntExtra(
+                        EXTRA_RESULT_CODE,
+                        0
+                    )
+
+                val resultData =
+                    getResultData(intent)
+
+                if (
+                    resultCode != 0 &&
+                    resultData != null
+                ) {
+
+                    startSoftwareDsp(
+                        resultCode,
+                        resultData
+                    )
+
+                } else {
+
+                    fail(
+                        "Software DSP requires MediaProjection permission. " +
+                            "Press START CAPTURE to authorize audio capture."
+                    )
+                }
             }
 
             ACTION_START_CAPTURE_DIAGNOSTIC -> {
 
                 val resultCode =
-                    intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+                    intent.getIntExtra(
+                        EXTRA_RESULT_CODE,
+                        0
+                    )
 
-                val resultData: Intent? =
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(
-                            EXTRA_RESULT_DATA,
-                            Intent::class.java
-                        )
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(EXTRA_RESULT_DATA)
-                    }
+                val resultData =
+                    getResultData(intent)
 
-                if (resultCode != 0 && resultData != null) {
-                    startCaptureDiagnostic(
+                if (
+                    resultCode != 0 &&
+                    resultData != null
+                ) {
+
+                    startSoftwareDsp(
                         resultCode,
                         resultData
                     )
+
                 } else {
+
                     fail(
                         "Missing MediaProjection consent data."
                     )
@@ -155,17 +238,28 @@ class AudioDspService : Service() {
             }
 
             ACTION_STOP_PROCESSING -> {
+
                 stopProcessing()
             }
 
             ACTION_TOGGLE_BYPASS -> {
+
                 toggleBypass()
             }
 
             null -> {
+
                 Log.d(
                     TAG,
                     "Service restarted without an action."
+                )
+            }
+
+            else -> {
+
+                Log.w(
+                    TAG,
+                    "Unknown service action: ${intent.action}"
                 )
             }
         }
@@ -173,114 +267,43 @@ class AudioDspService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startNativeEffect() {
+    private fun getResultData(
+        intent: Intent
+    ): Intent? {
 
-        Log.d(TAG, "Starting native Android DSP")
+        return if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.TIRAMISU
+        ) {
 
-        diagnosticCaptureMode = false
+            intent.getParcelableExtra(
+                EXTRA_RESULT_DATA,
+                Intent::class.java
+            )
 
-        stopCapturePipeline()
+        } else {
 
-        mediaProjection?.stop()
-        mediaProjection = null
-
-        _serviceError.value = null
-
-        try {
-
-            startForegroundForMediaPlayback()
-
-            if (!nativeEffect.start(dspEngine)) {
-
-                fail(
-                    nativeEffect.lastError
-                        ?: "Native Android audio effect is unavailable on this device."
-                )
-
-                return
-            }
-
-            if (!nativeEffect.sync(dspEngine)) {
-
-                fail(
-                    nativeEffect.lastError
-                        ?: "Unable to synchronize DSP settings with the native audio effect."
-                )
-
-                return
-            }
-
-            _isServiceActive.value = true
-
-            updateNotification()
-
-            Log.d(TAG, "Native Android DSP started")
-
-        } catch (e: Exception) {
-
-            fail(
-                "Unable to start native DSP: ${e.localizedMessage}"
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(
+                EXTRA_RESULT_DATA
             )
         }
     }
 
-    fun syncNativeEffect() {
-
-        if (!nativeEffect.isActive) {
-            return
-        }
-
-        try {
-
-            if (!nativeEffect.sync(dspEngine)) {
-
-                _serviceError.value =
-                    nativeEffect.lastError
-                        ?: "Failed to synchronize native DSP."
-            }
-
-        } catch (e: Exception) {
-
-            _serviceError.value =
-                "DSP synchronization error: ${e.localizedMessage}"
-
-            Log.e(
-                TAG,
-                "Native DSP synchronization failed",
-                e
-            )
-        }
-
-        updateNotification()
-    }
-
-    private fun toggleBypass() {
-
-        dspEngine.isBypassGlobal =
-            !dspEngine.isBypassGlobal
-
-        Log.d(
-            TAG,
-            "DSP bypass = ${dspEngine.isBypassGlobal}"
-        )
-
-        if (nativeEffect.isActive) {
-            syncNativeEffect()
-        }
-
-        updateNotification()
-    }
-
-    private fun startCaptureDiagnostic(
+    /**
+     * Main software DSP path.
+     */
+    private fun startSoftwareDsp(
         resultCode: Int,
         resultData: Intent
     ) {
 
-        Log.d(TAG, "Starting diagnostic capture pipeline")
+        Log.d(
+            TAG,
+            "Starting Android 14 software DSP pipeline"
+        )
 
-        diagnosticCaptureMode = true
-
-        nativeEffect.stop()
+        captureMode = true
 
         stopCapturePipeline()
 
@@ -323,73 +346,91 @@ class AudioDspService : Service() {
                 null
             )
 
-            if (!captureManager.startCapture(projection)) {
+            /*
+             * Start AudioPlaybackCapture.
+             */
+            if (
+                !captureManager.startCapture(
+                    projection
+                )
+            ) {
 
                 throw IllegalStateException(
-                    captureManager.currentStatus.toString()
+                    "AudioPlaybackCapture failed: " +
+                        captureManager.currentStatus
                 )
             }
 
-            if (!audioOutput.start()) {
+            /*
+             * Start AudioTrack output.
+             */
+            if (
+                !audioOutput.start()
+            ) {
 
                 throw IllegalStateException(
                     "AudioTrack output failed."
                 )
             }
 
+            /*
+             * Start DSP processing thread.
+             */
             startAudioThread()
 
             _isServiceActive.value = true
 
-            _serviceError.value =
-                "Diagnostic capture mode: source audio may remain audible on some devices."
+            _serviceError.value = null
 
             updateNotification()
 
             Log.d(
                 TAG,
-                "Diagnostic capture pipeline started"
+                "Software DSP pipeline started successfully"
             )
 
         } catch (e: Exception) {
 
+            Log.e(
+                TAG,
+                "Unable to start software DSP",
+                e
+            )
+
             fail(
-                "Capture diagnostic failed: ${e.localizedMessage}"
+                "Capture failed: ${e.localizedMessage}"
             )
         }
     }
 
-    private fun startForegroundForMediaPlayback() {
+    private fun toggleBypass() {
 
-        val notification = buildNotification()
+        dspEngine.isBypassGlobal =
+            !dspEngine.isBypassGlobal
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        Log.d(
+            TAG,
+            "DSP bypass = ${dspEngine.isBypassGlobal}"
+        )
 
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-
-        } else {
-
-            startForeground(
-                NOTIFICATION_ID,
-                notification
-            )
-        }
+        updateNotification()
     }
 
     private fun startForegroundForMediaProjection() {
 
-        val notification = buildNotification()
+        val notification =
+            buildNotification()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.Q
+        ) {
 
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                ServiceInfo
+                    .FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             )
 
         } else {
@@ -423,7 +464,9 @@ class AudioDspService : Service() {
                 this,
                 AudioDspService::class.java
             ).apply {
-                action = ACTION_STOP_PROCESSING
+
+                action =
+                    ACTION_STOP_PROCESSING
             }
 
         val stopPendingIntent =
@@ -440,7 +483,9 @@ class AudioDspService : Service() {
                 this,
                 AudioDspService::class.java
             ).apply {
-                action = ACTION_TOGGLE_BYPASS
+
+                action =
+                    ACTION_TOGGLE_BYPASS
             }
 
         val bypassPendingIntent =
@@ -453,16 +498,24 @@ class AudioDspService : Service() {
             )
 
         val mode =
-            if (diagnosticCaptureMode) {
-                "Diagnostic capture DSP"
+            if (captureMode) {
+
+                "Android 14 Software DSP"
+
             } else {
-                "Native Android output DSP"
+
+                "Audio DSP stopped"
             }
 
         val bypassText =
-            if (dspEngine.isBypassGlobal) {
+            if (
+                dspEngine.isBypassGlobal
+            ) {
+
                 "Enable DSP"
+
             } else {
+
                 "Bypass DSP"
             }
 
@@ -471,11 +524,19 @@ class AudioDspService : Service() {
             CHANNEL_ID
         )
             .setContentTitle(
-                getString(R.string.dsp_running_title)
+                getString(
+                    R.string.dsp_running_title
+                )
             )
-            .setContentText(mode)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(openPendingIntent)
+            .setContentText(
+                mode
+            )
+            .setSmallIcon(
+                R.drawable.ic_notification
+            )
+            .setContentIntent(
+                openPendingIntent
+            )
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .addAction(
@@ -485,7 +546,9 @@ class AudioDspService : Service() {
             )
             .addAction(
                 0,
-                getString(R.string.dsp_stop_action),
+                getString(
+                    R.string.dsp_stop_action
+                ),
                 stopPendingIntent
             )
             .setPriority(
@@ -507,13 +570,32 @@ class AudioDspService : Service() {
         )
     }
 
+    /**
+     * Real-time audio processing loop.
+     *
+     * AudioPlaybackCapture
+     *       ↓
+     * Short PCM
+     *       ↓
+     * Float AudioBuffer
+     *       ↓
+     * AudioDspEngine
+     *       ↓
+     * Short PCM
+     *       ↓
+     * AudioTrack
+     */
     private fun startAudioThread() {
 
-        if (isLoopRunning.get()) {
+        if (
+            isLoopRunning.get()
+        ) {
+
             Log.w(
                 TAG,
                 "Audio thread is already running."
             )
+
             return
         }
 
@@ -524,23 +606,35 @@ class AudioDspService : Service() {
 
                 try {
 
-                    android.os.Process.setThreadPriority(
-                        android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
-                    )
+                    android.os.Process
+                        .setThreadPriority(
+                            android.os.Process
+                                .THREAD_PRIORITY_URGENT_AUDIO
+                        )
 
                     val frameSize = 512
-                    val sampleCount = frameSize * 2
+
+                    val sampleCount =
+                        frameSize * 2
 
                     val input =
-                        ShortArray(sampleCount)
+                        ShortArray(
+                            sampleCount
+                        )
 
                     val output =
-                        ShortArray(sampleCount)
+                        ShortArray(
+                            sampleCount
+                        )
 
                     val buffer =
-                        AudioBuffer(frameSize)
+                        AudioBuffer(
+                            frameSize
+                        )
 
-                    while (isLoopRunning.get()) {
+                    while (
+                        isLoopRunning.get()
+                    ) {
 
                         val read =
                             captureManager.read(
@@ -549,46 +643,94 @@ class AudioDspService : Service() {
                                 sampleCount
                             )
 
-                        if (read <= 0) {
-                            break
-                        }
+                        if (
+                            read <= 0
+                        ) {
 
-                        val frames = read / 2
-
-                        if (frames <= 0) {
                             continue
                         }
 
-                        buffer.frameCount = frames
+                        val frames =
+                            read / 2
 
-                        for (i in 0 until frames) {
+                        if (
+                            frames <= 0
+                        ) {
+
+                            continue
+                        }
+
+                        buffer.frameCount =
+                            frames
+
+                        /*
+                         * Convert PCM16 → float.
+                         */
+                        for (
+                            i in 0 until frames
+                        ) {
 
                             buffer.left[i] =
-                                input[i * 2] / 32768f
+                                input[
+                                    i * 2
+                                ] / 32768f
 
                             buffer.right[i] =
-                                input[i * 2 + 1] / 32768f
+                                input[
+                                    i * 2 + 1
+                                ] / 32768f
                         }
 
-                        dspEngine.processBuffer(buffer)
+                        /*
+                         * REAL DSP PROCESSING.
+                         *
+                         * The AudioDspEngine is where the
+                         * 32-band EQ, MDRC, tone controls,
+                         * limiter, gain, etc. are applied.
+                         */
+                        dspEngine.processBuffer(
+                            buffer
+                        )
 
-                        for (i in 0 until frames) {
+                        /*
+                         * Convert float → PCM16.
+                         */
+                        for (
+                            i in 0 until frames
+                        ) {
 
-                            output[i * 2] =
+                            output[
+                                i * 2
+                            ] =
                                 (
                                     buffer.left[i]
-                                        .coerceIn(-1f, 1f) *
+                                        .coerceIn(
+                                            -1f,
+                                            1f
+                                        ) *
                                         32767f
-                                    ).toInt().toShort()
+                                    )
+                                    .toInt()
+                                    .toShort()
 
-                            output[i * 2 + 1] =
+                            output[
+                                i * 2 + 1
+                            ] =
                                 (
                                     buffer.right[i]
-                                        .coerceIn(-1f, 1f) *
+                                        .coerceIn(
+                                            -1f,
+                                            1f
+                                        ) *
                                         32767f
-                                    ).toInt().toShort()
+                                    )
+                                    .toInt()
+                                    .toShort()
                         }
 
+                        /*
+                         * Send processed PCM to Android output.
+                         */
                         audioOutput.write(
                             output,
                             0,
@@ -596,14 +738,18 @@ class AudioDspService : Service() {
                         )
                     }
 
-                } catch (e: InterruptedException) {
+                } catch (
+                    e: InterruptedException
+                ) {
 
                     Log.d(
                         TAG,
                         "Audio thread interrupted."
                     )
 
-                } catch (e: Exception) {
+                } catch (
+                    e: Exception
+                ) {
 
                     Log.e(
                         TAG,
@@ -611,9 +757,9 @@ class AudioDspService : Service() {
                         e
                     )
 
-                    // MutableStateFlow uses .value; postValue() belongs to LiveData.
                     _serviceError.value =
-                        "Audio processing error: ${e.localizedMessage}"
+                        "Audio processing error: " +
+                            e.localizedMessage
 
                 } finally {
 
@@ -627,8 +773,12 @@ class AudioDspService : Service() {
 
             }.apply {
 
-                name = "AudioDSP-Diagnostic"
-                priority = Thread.MAX_PRIORITY
+                name =
+                    "AudioDSP-Software"
+
+                priority =
+                    Thread.MAX_PRIORITY
+
                 start()
             }
     }
@@ -638,11 +788,17 @@ class AudioDspService : Service() {
         isLoopRunning.set(false)
 
         audioThread?.interrupt()
+
         audioThread = null
 
         try {
+
             captureManager.stopCapture()
-        } catch (e: Exception) {
+
+        } catch (
+            e: Exception
+        ) {
+
             Log.w(
                 TAG,
                 "Error stopping capture manager.",
@@ -651,8 +807,13 @@ class AudioDspService : Service() {
         }
 
         try {
+
             audioOutput.stop()
-        } catch (e: Exception) {
+
+        } catch (
+            e: Exception
+        ) {
+
             Log.w(
                 TAG,
                 "Error stopping AudioTrack output.",
@@ -661,8 +822,13 @@ class AudioDspService : Service() {
         }
 
         try {
+
             mediaProjection?.stop()
-        } catch (e: Exception) {
+
+        } catch (
+            e: Exception
+        ) {
+
             Log.w(
                 TAG,
                 "Error stopping MediaProjection.",
@@ -682,9 +848,7 @@ class AudioDspService : Service() {
 
         stopCapturePipeline()
 
-        nativeEffect.stop()
-
-        diagnosticCaptureMode = false
+        captureMode = false
 
         _isServiceActive.value = false
 
@@ -695,21 +859,24 @@ class AudioDspService : Service() {
         stopSelf()
     }
 
-    private fun fail(message: String) {
+    private fun fail(
+        message: String
+    ) {
 
         Log.e(
             TAG,
             message
         )
 
-        _serviceError.value = message
-        _isServiceActive.value = false
+        _serviceError.value =
+            message
+
+        _isServiceActive.value =
+            false
 
         stopCapturePipeline()
 
-        nativeEffect.stop()
-
-        diagnosticCaptureMode = false
+        captureMode = false
 
         stopForeground(
             STOP_FOREGROUND_REMOVE
@@ -725,15 +892,14 @@ class AudioDspService : Service() {
             "AudioDspService destroyed."
         )
 
-        instance = null
-
         stopCapturePipeline()
 
-        nativeEffect.stop()
+        captureMode = false
 
-        diagnosticCaptureMode = false
+        _isServiceActive.value =
+            false
 
-        _isServiceActive.value = false
+        instance = null
 
         super.onDestroy()
     }
