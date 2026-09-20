@@ -86,18 +86,99 @@ class NativeSystemEffectController {
 
     fun sync(engine: AudioDspEngine): Boolean {
         val effect = dynamics ?: return false
+
         return try {
-            val config = buildConfig(engine)
-            effect.setConfig(config)
+            /*
+             * DynamicsProcessing does not expose setConfig() on the effect
+             * instance. Its individual stages are updated through the public
+             * API instead. The stage objects keep the same band counts that
+             * were created in start().
+             */
+            val leftGain = channelGainDb(engine, -1f)
+            val rightGain = channelGainDb(engine, 1f)
+
+            effect.setInputGainbyChannel(0, leftGain)
+            effect.setInputGainbyChannel(1, rightGain)
+
+            val eq = DynamicsProcessing.Eq(
+                true,
+                !engine.isBypassGlobal,
+                Equalizer32Band.BAND_COUNT
+            )
+
+            for (i in 0 until Equalizer32Band.BAND_COUNT) {
+                val frequency = Equalizer32Band.FREQUENCIES[i]
+                val gain = if (engine.equalizer32.isEnabled) {
+                    combinedBandGain(
+                        engine,
+                        frequency,
+                        engine.equalizer32.getBandGain(i)
+                    )
+                } else {
+                    0f
+                }
+
+                eq.setBand(
+                    i,
+                    DynamicsProcessing.EqBand(
+                        true,
+                        frequency,
+                        gain.coerceIn(-24f, 24f)
+                    )
+                )
+            }
+
+            effect.setPreEqAllChannelsTo(eq)
+
+            val mbc = DynamicsProcessing.Mbc(
+                true,
+                engine.mdrc.isEnabled && !engine.isBypassGlobal,
+                MBC_BANDS
+            )
+
+            setMbcBand(mbc, 0, 250f, engine.mdrc.lowParams)
+            setMbcBand(mbc, 1, 3500f, engine.mdrc.midParams)
+            setMbcBand(mbc, 2, 20000f, engine.mdrc.highParams)
+
+            effect.setMbcAllChannelsTo(mbc)
+
+            val limiter = DynamicsProcessing.Limiter(
+                true,
+                engine.limiter.isEnabled && !engine.isBypassGlobal,
+                0,
+                0.5f,
+                engine.limiter.releaseMs.coerceIn(10f, 500f),
+                20f,
+                engine.limiter.ceilingDb,
+                0f
+            )
+
+            effect.setLimiterAllChannelsTo(limiter)
+
             effect.enabled = !engine.isBypassGlobal
 
             virtualizer?.let {
-                it.enabled = engine.virtualizer.isEnabled && engine.virtualizer.strength > 0.001f
-                it.setStrength((engine.virtualizer.strength * 1000f).toInt().coerceIn(0, 1000).toShort())
+                it.enabled =
+                    engine.virtualizer.isEnabled &&
+                    engine.virtualizer.strength > 0.001f
+
+                it.setStrength(
+                    (engine.virtualizer.strength * 1000f)
+                        .toInt()
+                        .coerceIn(0, 1000)
+                        .toShort()
+                )
             }
+
+            lastError = null
             true
+
         } catch (e: Throwable) {
-            lastError = "Native effect update failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+            lastError =
+                "Native effect update failed: ${
+                    e.localizedMessage ?: e.javaClass.simpleName
+                }"
+
             Log.e(TAG, lastError, e)
             false
         }
