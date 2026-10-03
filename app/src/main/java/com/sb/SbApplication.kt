@@ -6,8 +6,6 @@ import com.sb.dsp.DspEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 /**
  * SbApplication: Punto de entrada de la aplicación SB.
@@ -27,14 +25,7 @@ class SbApplication : Application() {
         dspEngine = DspEngine(this, applicationScope)
         presetRepository = PresetRepository(this)
 
-        // Restaurar estado persistido en el arranque
-        applicationScope.launch {
-            try {
-                val savedConfig = presetRepository.activeConfigFlow.first()
-                dspEngine.updateConfig(savedConfig)
-            } catch (e: Exception) {
-                // Si ocurre algún fallo de I/O, se mantiene DspConfig.DEFAULT
-            }
-        }
+        // La restauración de la configuración se realiza en SbAudioService antes
+        // de crear los efectos, evitando una carrera entre DataStore y el backend.
     }
 }
