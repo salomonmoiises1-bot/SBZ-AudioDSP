@@ -8,7 +8,6 @@ import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
-import kotlin.math.pow
 
 /**
  * Único backend principal de DSP para audio externo en Android.
@@ -42,7 +41,9 @@ class DynamicsProcessingManager {
         // DynamicsProcessing lets the app choose the physical Pre-EQ layout.
         // Keep that layout bounded to SB's EQ32 ceiling; never manufacture a
         // 64/128+ band input merely because the UI has a logical EQ model.
-        private val EQ_BAND_CANDIDATES = intArrayOf(32, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1)
+        private val EQ_BAND_CANDIDATES = intArrayOf(
+            MAX_PHYSICAL_EQ_BANDS, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1
+        )
     }
 
     data class BackendInfo(
@@ -68,13 +69,14 @@ class DynamicsProcessingManager {
     var hasControl: Boolean = false
         private set
 
-    private var lastConfig: DspConfig = DspConfig.DEFAULT
-    private var appliedConfig: DspConfig? = null
-    @Volatile private var lastControlLossMs: Long = 0L
-    private val reclaimHandler = Handler(android.os.Looper.getMainLooper())
-    private val reclaimCooldownMs = 2000L
+    /** Software MDRC is retained only for direct PCM callers and diagnostics. */
+    val softwareMdrc = MdrcProcessor()
 
-    private val effectLock = Any()
+    private var appliedCutoffs = floatArrayOf(160f, 800f, 4000f, 20000f)
+    private var lastConfig: DspConfig = DspConfig.DEFAULT
+    private var lastAutoHeadroomDb = 0f
+    private var lastAutoGainDb = 0f
+
     private val eqWorkerThread = HandlerThread("SB-DpEqWriter").apply { start() }
     private val eqWorker = Handler(eqWorkerThread.looper)
     private val pendingEqConfig = AtomicReference<DspConfig?>(null)
@@ -83,7 +85,7 @@ class DynamicsProcessingManager {
 
     fun initialize(
         audioSessionId: Int,
-        priority: Int = Int.MAX_VALUE,
+        priority: Int = 1000,
         initialConfig: DspConfig = DspConfig.DEFAULT
     ): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
@@ -93,27 +95,20 @@ class DynamicsProcessingManager {
         }
 
         releaseEffectOnly()
-        hasControl = false
         currentSessionId = audioSessionId
         val safeConfig = initialConfig.validate()
+        softwareMdrc.updateConfig(safeConfig)
         lastConfig = safeConfig
-        ParametricToDpConverter.setNumBands(MAX_PHYSICAL_EQ_BANDS)
 
         for (preEqCount in EQ_BAND_CANDIDATES) {
             try {
                 val config = buildConfig(preEqCount, safeConfig)
                 val dp = DynamicsProcessing(priority, audioSessionId, config)
-                hasControl = dp.hasControl()
-                dp.setControlStatusListener { effect, granted ->
+                dp.setControlStatusListener { _, granted ->
                     hasControl = granted
                     Log.i(TAG, "Control DP ${if (granted) "obtenido" else "perdido"}: session=$audioSessionId")
-                    if (!granted) {
-                        scheduleReclaim(safeConfig)
-                    }
                 }
-                dp.setEnableStatusListener { _, enabled ->
-                    if (!enabled && safeConfig.dspEnabled) scheduleReclaim(safeConfig)
-                }
+                hasControl = dp.hasControl()
                 dp.setEnabled(safeConfig.dspEnabled)
 
                 dynamicsProcessing = dp
@@ -125,7 +120,12 @@ class DynamicsProcessingManager {
                     channelCount = dp.channelCount,
                     variant = dp.getConfig().variant
                 )
-                appliedConfig = null
+                appliedCutoffs = floatArrayOf(
+                    safeConfig.mdrcCutoff1,
+                    safeConfig.mdrcCutoff2,
+                    safeConfig.mdrcCutoff3,
+                    safeConfig.mdrcCutoff4
+                )
 
                 Log.i(
                     TAG,
@@ -145,39 +145,7 @@ class DynamicsProcessingManager {
         return false
     }
 
-    fun setOutputSampleRateHz(rateHz: Float) {
-        if (rateHz.isFinite() && rateHz > 0f) {
-            ParametricToDpConverter.deviceSampleRateHz = rateHz
-        }
-    }
-
-    private fun scheduleReclaim(config: DspConfig) {
-        val now = SystemClock.uptimeMillis()
-        if (now - lastControlLossMs < reclaimCooldownMs) return
-        lastControlLossMs = now
-        reclaimHandler.postDelayed({
-            synchronized(effectLock) {
-                val dp = dynamicsProcessing ?: return@synchronized
-                try {
-                    if (!isAvailable) return@synchronized
-                    if (dp.hasControl()) {
-                        hasControl = true
-                        if (config.dspEnabled && !dp.enabled) dp.setEnabled(true)
-                        return@synchronized
-                    }
-                } catch (_: Throwable) {}
-                val latest = lastConfig
-                releaseEffectOnly()
-                initialize(currentSessionId, Int.MAX_VALUE, latest)
-                applyConfig(latest)
-            }
-        }, 100L)
-    }
-
     private fun buildConfig(preEqCount: Int, config: DspConfig): DynamicsProcessing.Config {
-        ParametricToDpConverter.setNumBands(preEqCount)
-        val eq = buildParametricEq(config)
-        val converted = ParametricToDpConverter.convertFeatureAware(eq)
         val builder = DynamicsProcessing.Config.Builder(
             DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
             2,
@@ -190,15 +158,24 @@ class DynamicsProcessingManager {
             true
         )
 
+        val logicalFreqs = config.activeEqFrequencies()
+        val logicalGains = config.activeEqGains()
+        val physicalFreqs = buildPhysicalEqFrequencies(preEqCount)
+        val mapped = mapLogicalGains(logicalFreqs, logicalGains, physicalFreqs)
+
         for (channel in 0 until 2) {
-            val dpEq = DynamicsProcessing.Eq(true, true, preEqCount)
+            val eq = DynamicsProcessing.Eq(true, true, preEqCount)
             for (band in 0 until preEqCount) {
-                dpEq.setBand(
+                eq.setBand(
                     band,
-                    DynamicsProcessing.EqBand(true, converted.cutoffs[band], converted.gains[band])
+                    DynamicsProcessing.EqBand(
+                        config.dspEnabled,
+                        physicalFreqs[band],
+                        mapped[band]
+                    )
                 )
             }
-            builder.setPreEqByChannelIndex(channel, dpEq)
+            builder.setPreEqByChannelIndex(channel, eq)
 
             val mbc = DynamicsProcessing.Mbc(true, config.mdrcEnabled, MBC_BAND_COUNT)
             val mdrcBands = config.mdrcBands()
@@ -207,116 +184,213 @@ class DynamicsProcessingManager {
                 mbc.setBand(band, createNativeMdrcBand(mdrcBands[band], cutoffs[band], config.mdrcEnabled))
             }
             builder.setMbcByChannelIndex(channel, mbc)
+
             builder.setLimiterByChannelIndex(channel, createNativeLimiter(config))
         }
+
         return builder.build()
     }
 
-    /** Builds SB's logical EQ as parametric filters; UI remains EQ10/EQ20/EQ32. */
-    private fun buildParametricEq(config: DspConfig): FunctionalParametricEqualizer {
-        val eq = FunctionalParametricEqualizer(48000).apply { isEnabled = config.dspEnabled }
-        eq.clearBands()
+    /**
+     * Log-spaced physical centers used only for the actual DP bands that were
+     * successfully created. Logical EQ frequencies remain independent.
+     */
+    private fun buildPhysicalEqFrequencies(count: Int): FloatArray {
+        if (count <= 1) return floatArrayOf(1000f)
+        val minLog = kotlin.math.ln(16f)
+        val maxLog = kotlin.math.ln(20000f)
+        return FloatArray(count) { index ->
+            kotlin.math.exp(minLog + (maxLog - minLog) * index / (count - 1).toFloat())
+        }
+    }
 
-        val freqs = config.activeEqFrequencies()
-        val gains = config.activeEqGains()
-        for (i in freqs.indices) {
-            eq.addBand(
-                freqs[i].coerceIn(10f, 20000f),
-                gains.getOrElse(i) { 0f }.coerceIn(-15f, 15f),
-                FunctionalBiquadFilter.FilterType.BELL,
-                4.318
+    private fun mapLogicalGains(
+        logicalFreqs: List<Float>,
+        logicalGains: List<Float>,
+        physicalFreqs: FloatArray
+    ): FloatArray {
+        val result = FloatArray(physicalFreqs.size)
+        if (logicalFreqs.isEmpty() || logicalGains.isEmpty()) return result
+
+        for (i in physicalFreqs.indices) {
+            var gain = CapabilityAdapter.interpolateGainAtFrequency(
+                physicalFreqs[i],
+                logicalFreqs,
+                logicalGains
             )
+
+            // Tone is represented in the same physical EQ stage, but it must
+            // follow the actual 3-band tone curves (bass shelf, mid peaking,
+            // treble shelf). A linear interpolation of the three control points
+            // does not reproduce a tone control and can produce large, unintended
+            // gains between the controls.
+            gain += toneResponseDb(
+                physicalFreqs[i],
+                lastConfig.toneBass,
+                lastConfig.toneMid,
+                lastConfig.toneTreble
+            )
+            result[i] = gain.coerceIn(-15f, 15f)
+        }
+        return result
+    }
+
+    /**
+     * Returns the combined frequency response of the three Tone controls in dB.
+     *
+     * The real playback backend is DynamicsProcessing, so Tone cannot use the
+     * PCM ToneManager directly. Instead, its response is projected onto the
+     * physical EQ bands. The projection uses the same RBJ biquad equations as
+     * the software tone filters, rather than interpolating the three control
+     * values as if they were EQ-band gains.
+     */
+    private fun toneResponseDb(
+        frequencyHz: Float,
+        bassDb: Float,
+        midDb: Float,
+        trebleDb: Float
+    ): Float {
+        val f = frequencyHz.coerceIn(MIN_CUTOFF_HZ, 20000f)
+        return (
+            biquadMagnitudeDb(
+                f, 100f, 0.707f, bassDb, BiquadToneType.LOW_SHELF
+            ) +
+            biquadMagnitudeDb(
+                f, 1000f, 1.0f, midDb, BiquadToneType.PEAKING
+            ) +
+            biquadMagnitudeDb(
+                f, 10000f, 0.707f, trebleDb, BiquadToneType.HIGH_SHELF
+            )
+        ).coerceIn(-30f, 30f)
+    }
+
+    private enum class BiquadToneType {
+        LOW_SHELF,
+        PEAKING,
+        HIGH_SHELF
+    }
+
+    private fun biquadMagnitudeDb(
+        frequencyHz: Float,
+        centerHz: Float,
+        q: Float,
+        gainDb: Float,
+        type: BiquadToneType
+    ): Float {
+        if (!gainDb.isFinite() || kotlin.math.abs(gainDb) < 0.0001f) return 0f
+
+        val fs = 48000.0
+        val f0 = centerHz.coerceIn(10f, (fs * 0.475).toFloat()).toDouble()
+        val f = frequencyHz.coerceIn(10f, (fs * 0.475).toFloat()).toDouble()
+        val safeQ = q.coerceIn(0.1f, 40f).toDouble()
+        val gain = gainDb.coerceIn(-15f, 15f).toDouble()
+
+        val omega0 = 2.0 * kotlin.math.PI * f0 / fs
+        val sn = kotlin.math.sin(omega0)
+        val cs = kotlin.math.cos(omega0)
+        val alpha = sn / (2.0 * safeQ)
+        val a = kotlin.math.pow(10.0, gain / 40.0)
+
+        var b0: Double
+        var b1: Double
+        var b2: Double
+        var a0: Double
+        var a1: Double
+        var a2: Double
+
+        when (type) {
+            BiquadToneType.PEAKING -> {
+                b0 = 1.0 + alpha * a
+                b1 = -2.0 * cs
+                b2 = 1.0 - alpha * a
+                a0 = 1.0 + alpha / a
+                a1 = -2.0 * cs
+                a2 = 1.0 - alpha / a
+            }
+
+            BiquadToneType.LOW_SHELF -> {
+                val sqrtA = kotlin.math.sqrt(a)
+                val twoSqrtAAlpha = 2.0 * sqrtA * alpha
+                b0 = a * ((a + 1.0) - (a - 1.0) * cs + twoSqrtAAlpha)
+                b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cs)
+                b2 = a * ((a + 1.0) - (a - 1.0) * cs - twoSqrtAAlpha)
+                a0 = (a + 1.0) + (a - 1.0) * cs + twoSqrtAAlpha
+                a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cs)
+                a2 = (a + 1.0) + (a - 1.0) * cs - twoSqrtAAlpha
+            }
+
+            BiquadToneType.HIGH_SHELF -> {
+                val sqrtA = kotlin.math.sqrt(a)
+                val twoSqrtAAlpha = 2.0 * sqrtA * alpha
+                b0 = a * ((a + 1.0) + (a - 1.0) * cs + twoSqrtAAlpha)
+                b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cs)
+                b2 = a * ((a + 1.0) + (a - 1.0) * cs - twoSqrtAAlpha)
+                a0 = (a + 1.0) - (a - 1.0) * cs + twoSqrtAAlpha
+                a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cs)
+                a2 = (a + 1.0) - (a - 1.0) * cs - twoSqrtAAlpha
+            }
         }
 
-        // Tone is part of the same parametric response before conversion.
-        eq.addBand(100f, config.toneBass.coerceIn(-15f, 15f), FunctionalBiquadFilter.FilterType.LOW_SHELF, 0.707)
-        eq.addBand(1000f, config.toneMid.coerceIn(-15f, 15f), FunctionalBiquadFilter.FilterType.BELL, 1.0)
-        eq.addBand(10000f, config.toneTreble.coerceIn(-15f, 15f), FunctionalBiquadFilter.FilterType.HIGH_SHELF, 0.707)
-        return eq
+        if (!a0.isFinite() || kotlin.math.abs(a0) < 1e-12) return 0f
+
+        b0 /= a0
+        b1 /= a0
+        b2 /= a0
+        a1 /= a0
+        a2 /= a0
+
+        val omega = 2.0 * kotlin.math.PI * f / fs
+        val c1 = kotlin.math.cos(omega)
+        val s1 = kotlin.math.sin(omega)
+        val c2 = kotlin.math.cos(2.0 * omega)
+        val s2 = kotlin.math.sin(2.0 * omega)
+
+        val numRe = b0 + b1 * c1 + b2 * c2
+        val numIm = -(b1 * s1 + b2 * s2)
+        val denRe = 1.0 + a1 * c1 + a2 * c2
+        val denIm = -(a1 * s1 + a2 * s2)
+
+        val numPower = numRe * numRe + numIm * numIm
+        val denPower = denRe * denRe + denIm * denIm
+        if (!numPower.isFinite() || !denPower.isFinite() || denPower <= 1e-20) return 0f
+
+        return (10.0 * kotlin.math.log10((numPower / denPower).coerceAtLeast(1e-20)))
+            .toFloat()
+            .coerceIn(-15f, 15f)
     }
 
     fun applyConfig(config: DspConfig, autoHeadroomDb: Float = 0f, autoGainDb: Float = 0f) {
         val safe = config.validate()
         lastConfig = safe
+        lastAutoHeadroomDb = autoHeadroomDb
+        lastAutoGainDb = autoGainDb
+        softwareMdrc.updateConfig(safe)
 
         val dp = dynamicsProcessing ?: return
         if (!isAvailable || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
 
         try {
-            val previous = appliedConfig
-
-            if (dp.enabled != safe.dspEnabled) {
-                dp.setEnabled(safe.dspEnabled)
-            }
-
-            if (!safe.dspEnabled) {
-                appliedConfig = safe
-                return
-            }
-
-            applyInputGain(safe, autoHeadroomDb, autoGainDb)
-
-            val dspStateChanged = previous == null || previous.dspEnabled != safe.dspEnabled
-            val eqChanged = dspStateChanged ||
-                previous?.eqMode != safe.eqMode ||
-                previous?.activeEqGains() != safe.activeEqGains() ||
-                previous?.toneBass != safe.toneBass ||
-                previous?.toneMid != safe.toneMid ||
-                previous?.toneTreble != safe.toneTreble
-
-            val mdrcChanged = dspStateChanged ||
-                previous?.mdrcEnabled != safe.mdrcEnabled ||
-                previous?.mdrcBand1 != safe.mdrcBand1 ||
-                previous?.mdrcBand2 != safe.mdrcBand2 ||
-                previous?.mdrcBand3 != safe.mdrcBand3 ||
-                previous?.mdrcBand4 != safe.mdrcBand4 ||
-                previous?.mdrcCutoff1 != safe.mdrcCutoff1 ||
-                previous?.mdrcCutoff2 != safe.mdrcCutoff2 ||
-                previous?.mdrcCutoff3 != safe.mdrcCutoff3 ||
-                previous?.mdrcCutoff4 != safe.mdrcCutoff4
-
-            val limiterChanged = dspStateChanged ||
-                previous?.limiterEnabled != safe.limiterEnabled ||
-                previous?.limiterThreshold != safe.limiterThreshold ||
-                previous?.limiterAttack != safe.limiterAttack ||
-                previous?.limiterRelease != safe.limiterRelease ||
-                previous?.limiterRatio != safe.limiterRatio
-
-            if (mdrcChanged) applyMdrc(dp, safe)
-            if (limiterChanged) applyLimiter(dp, safe)
-            if (eqChanged) scheduleEqWrite(safe)
-
-            appliedConfig = safe
-        } catch (e: Throwable) {
-            Log.e(TAG, "Error aplicando configuración DP", e)
-        }
-    }
-
-    /**
-     * Actualiza únicamente las ganancias globales de entrada. AutoGain usa este
-     * camino para no reescribir EQ/MDRC/limiter en cada medición RMS.
-     */
-    fun applyInputGain(config: DspConfig, autoHeadroomDb: Float = 0f, autoGainDb: Float = 0f) {
-        val dp = dynamicsProcessing ?: return
-        if (!isAvailable || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
-
-        try {
-            val safe = config.validate()
+            dp.setEnabled(safe.dspEnabled)
             if (!safe.dspEnabled) return
 
+            // Input gain is the only global gain stage available in the DP path.
+            // Master gain and balance are therefore applied here per channel.
             val master = safe.masterGain
             val leftBalance = if (safe.balance > 0f) -40f * safe.balance else 0f
             val rightBalance = if (safe.balance < 0f) 40f * safe.balance else 0f
             val baseGain = (safe.preGain + autoHeadroomDb + autoGainDb + master).coerceIn(-40f, 12f)
-
             if (backendInfo.channelCount >= 2) {
                 dp.setInputGainbyChannel(0, (baseGain + leftBalance).coerceIn(-40f, 12f))
                 dp.setInputGainbyChannel(1, (baseGain + rightBalance).coerceIn(-40f, 12f))
             } else {
                 dp.setInputGainAllChannelsTo(baseGain)
             }
+
+            applyMdrc(dp, safe)
+            applyLimiter(dp, safe)
+            scheduleEqWrite(safe)
         } catch (e: Throwable) {
-            Log.w(TAG, "Error actualizando ganancias de entrada DP: ${e.message}")
+            Log.e(TAG, "Error aplicando configuración DP", e)
         }
     }
 
@@ -325,39 +399,40 @@ class DynamicsProcessingManager {
         pendingEqWrite?.let(eqWorker::removeCallbacks)
 
         val job = Runnable {
-            synchronized(effectLock) {
-                val latest = pendingEqConfig.getAndSet(null) ?: return@synchronized
-                val dp = dynamicsProcessing ?: return@synchronized
-                try {
-                    val count = dp.getConfig().preEqBandCount
-                    if (count <= 0) return@synchronized
-                    ParametricToDpConverter.setNumBands(count)
-                    val converted = ParametricToDpConverter.convertFeatureAware(buildParametricEq(latest))
-                    val n = minOf(count, converted.cutoffs.size, converted.gains.size)
-                    val leftEq = DynamicsProcessing.Eq(true, true, count)
-                    val rightEq = DynamicsProcessing.Eq(true, true, count)
-                    for (band in 0 until n) {
-                        val b = DynamicsProcessing.EqBand(latest.dspEnabled, converted.cutoffs[band], converted.gains[band])
-                        leftEq.setBand(band, b)
-                        rightEq.setBand(band, b)
+            val latest = pendingEqConfig.getAndSet(null) ?: return@Runnable
+            val dp = dynamicsProcessing ?: return@Runnable
+            try {
+                val count = dp.getConfig().preEqBandCount
+                if (count <= 0) return@Runnable
+                val physicalFreqs = buildPhysicalEqFrequencies(count)
+                val mapped = mapLogicalGains(
+                    latest.activeEqFrequencies(),
+                    latest.activeEqGains(),
+                    physicalFreqs
+                )
+
+                for (channel in 0 until dp.channelCount) {
+                    for (band in 0 until count) {
+                        dp.setPreEqBandByChannelIndex(
+                            channel,
+                            band,
+                            DynamicsProcessing.EqBand(
+                                latest.dspEnabled,
+                                physicalFreqs[band],
+                                mapped[band]
+                            )
+                        )
                     }
-                    // Preserve any remaining physical slots as neutral filters.
-                    for (band in n until count) {
-                        val b = DynamicsProcessing.EqBand(latest.dspEnabled, 20000f, 0f)
-                        leftEq.setBand(band, b)
-                        rightEq.setBand(band, b)
-                    }
-                    dp.setPreEqByChannelIndex(0, leftEq)
-                    dp.setPreEqByChannelIndex(1, rightEq)
-                    lastEqWriteMs = SystemClock.uptimeMillis()
-                } catch (e: Throwable) {
-                    Log.e(TAG, "Error escribiendo EQ paramétrico DP", e)
-                } finally {
-                    pendingEqWrite = null
-                    if (pendingEqConfig.get() != null) scheduleEqWrite(pendingEqConfig.get()!!)
                 }
+                lastEqWriteMs = SystemClock.uptimeMillis()
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error escribiendo EQ DP", e)
+            } finally {
+                pendingEqWrite = null
+                if (pendingEqConfig.get() != null) scheduleEqWrite(pendingEqConfig.get()!!)
             }
         }
+
         pendingEqWrite = job
         val delay = (lastEqWriteMs + MIN_EQ_WRITE_SPACING_MS - SystemClock.uptimeMillis())
             .coerceIn(0L, MIN_EQ_WRITE_SPACING_MS)
@@ -379,6 +454,7 @@ class DynamicsProcessingManager {
                 )
             }
         }
+        appliedCutoffs = cutoffs.copyOf()
     }
 
     private fun createNativeMdrcBand(
@@ -427,28 +503,27 @@ class DynamicsProcessingManager {
         }
     }
 
+    fun getGainReductionDb(): FloatArray = softwareMdrc.getGainReductionDb()
+
     fun release() {
         pendingEqWrite?.let(eqWorker::removeCallbacks)
         pendingEqWrite = null
         pendingEqConfig.set(null)
         releaseEffectOnly()
+        softwareMdrc.reset()
     }
 
     private fun releaseEffectOnly() {
-        reclaimHandler.removeCallbacksAndMessages(null)
-        synchronized(effectLock) {
-            try {
-                dynamicsProcessing?.enabled = false
-                dynamicsProcessing?.release()
-            } catch (e: Throwable) {
-                Log.w(TAG, "Error liberando DynamicsProcessing: ${e.message}")
-            } finally {
-                dynamicsProcessing = null
-                isAvailable = false
-                hasControl = false
-                backendInfo = BackendInfo()
-                appliedConfig = null
-            }
+        try {
+            dynamicsProcessing?.enabled = false
+            dynamicsProcessing?.release()
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error liberando DynamicsProcessing: ${e.message}")
+        } finally {
+            dynamicsProcessing = null
+            isAvailable = false
+            hasControl = false
+            backendInfo = BackendInfo()
         }
     }
 

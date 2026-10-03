@@ -13,7 +13,6 @@ class EqualizerManager {
     }
 
     private var equalizer: Equalizer? = null
-    private var lastConfig: DspConfig? = null
     var isAvailable: Boolean = false
         private set
     var numberOfBands: Short = 0
@@ -66,12 +65,7 @@ class EqualizerManager {
                 eq.enabled = config.dspEnabled
             }
 
-            if (!config.dspEnabled || numberOfBands <= 0) {
-                lastConfig = config
-                return
-            }
-
-            if (lastConfig == config) return
+            if (!config.dspEnabled || numberOfBands <= 0) return
 
             // Mapear ganancias lógicas según el modo activo
             val logicalFreqs = config.activeEqFrequencies()
@@ -92,7 +86,6 @@ class EqualizerManager {
             // Readback verification
             val actualLevel0 = eq.getBandLevel(0.toShort())
             Log.v(TAG, "Equalizer readback band 0: $actualLevel0 mB")
-            lastConfig = config
         } catch (e: Exception) {
             Log.e(TAG, "Error aplicando Equalizer: ${e.message}", e)
         }
@@ -109,7 +102,6 @@ class EqualizerManager {
             isAvailable = false
             numberOfBands = 0
             centerFrequenciesHz = emptyList()
-            lastConfig = null
         }
     }
 }

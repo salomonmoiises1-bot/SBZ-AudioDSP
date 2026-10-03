@@ -13,7 +13,6 @@ class BassBoostManager {
     }
 
     private var bassBoost: BassBoost? = null
-    private var lastStrength = -1
     var isAvailable: Boolean = false
         private set
     var isStrengthSupported: Boolean = false
@@ -22,7 +21,7 @@ class BassBoostManager {
     /**
      * Inicializa el efecto BassBoost para la sesión de audio especificada.
      */
-    fun initialize(audioSessionId: Int, priority: Int = Int.MAX_VALUE): Boolean {
+    fun initialize(audioSessionId: Int, priority: Int = 1000): Boolean {
         release()
         return try {
             val bb = BassBoost(priority, audioSessionId)
@@ -50,13 +49,14 @@ class BassBoostManager {
                 effect.enabled = shouldEnable
             }
 
-            val strength = config.bassBoostStrength.coerceIn(0, 1000)
-            if (shouldEnable && isStrengthSupported && strength != lastStrength) {
-                effect.setStrength(strength.toShort())
-                Log.v(TAG, "BassBoost aplicado: solicitado=$strength, actual=${effect.roundedStrength}")
-            }
+            if (shouldEnable && isStrengthSupported) {
+                val clampedStrength = config.bassBoostStrength.coerceIn(0, 1000).toShort()
+                effect.setStrength(clampedStrength)
 
-            lastStrength = if (shouldEnable) strength else -1
+                // Readback para verificar valor real aplicado por el driver de audio
+                val actualStrength = effect.roundedStrength
+                Log.v(TAG, "BassBoost aplicado: solicitado=${config.bassBoostStrength}, actual=$actualStrength")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Fallo al aplicar BassBoost: ${e.message}", e)
         }
@@ -71,8 +71,6 @@ class BassBoostManager {
         } finally {
             bassBoost = null
             isAvailable = false
-            isStrengthSupported = false
-            lastStrength = -1
         }
     }
 }
