@@ -1,48 +1,124 @@
-SB — Auditoría general única de arquitectura DSP
+SB — Auditoría integral y optimización de funcionamiento
 
-BASE
+BASE AUDITADA
 - Proyecto: SB / com.sb
-- Backend objetivo: Android AudioEffect sobre sesión global 0
-- DynamicsProcessing: API 28+
-- AGP 8.2.2 / Kotlin 1.9.22 / compileSdk 34
-- GitHub Actions: Gradle 8.5 + JDK 17
+- ZIP de entrada: SBZ-AudioDSP-main (4).zip
+- Backend real para audio externo: Android AudioEffect/DynamicsProcessing sobre sesión global 0.
+- El proyecto no recibe PCM de otras aplicaciones; PcmAudioPipeline queda reservado para consumidores que entreguen PCM directamente.
+- API objetivo: Android 14 / compileSdk 34 / minSdk 28.
+- Workflow de CI: Gradle 8.5 + JDK 17.
 
-CRITERIO
-La ruta de audio externo se audita como una aplicación system-wide: el audio de otras apps no se entrega como PCM a SB. Por eso la ruta real debe pasar por AudioEffect/DynamicsProcessing. El pipeline PCM propio se conserva sólo para consumidores que realmente entreguen PCM al motor.
+TRAZADO AUDITADO
+UI
+ -> MainViewModel
+ -> DspConfig.validate()
+ -> DspEngine.updateConfig()
+ -> coalescing de configuración
+ -> DynamicsProcessingManager / fallback EqualizerManager
+ -> BassBoostManager + VirtualizerManager
+ -> AudioMeterManager / Visualizer para medición RMS
 
-CORRECCIONES APLICADAS
-1. DynamicsProcessing pasa a ser el backend principal del EQ, MBC y limiter cuando está disponible.
-2. Equalizer nativo queda como fallback; no se ejecuta en paralelo con DynamicsProcessing para evitar doble ecualización.
-3. SB mantiene sesión 0 como backend global. Las sesiones privadas anunciadas por Android se registran sólo para diagnóstico y no provocan que el motor salte de sesión.
-4. DynamicsProcessing prueba primero hasta 32 bandas de Pre-EQ y reduce el número sólo si el HAL/vendor no acepta la configuración. El número físico aceptado se expone en capacidades.
-5. Las 32/20/10 bandas lógicas se proyectan logarítmicamente sobre las bandas físicas reales del DP; no se afirma que el HAL tenga 32 filtros cuando no los tiene.
-6. EQ, MDRC y limiter usan setters reales de DynamicsProcessing. Los cambios de crossover no reconstruyen el efecto: se actualizan directamente las bandas MBC, porque Android expone estos parámetros como modificables durante la ejecución.
-7. EQ32 se actualiza mediante coalescing en un HandlerThread con separación mínima entre escrituras para evitar saturar el binder/audio HAL durante movimientos rápidos.
-8. BassBoost y Virtualizer permanecen como efectos complementarios independientes. No se crean dos ecualizadores simultáneos.
-9. Pre-Gain, Master Gain y Balance se aplican mediante las ganancias de entrada por canal disponibles en DynamicsProcessing. Esto mantiene los controles funcionales en la ruta AudioEffect; la API no ofrece un Master Gain/Balance separado posterior al limiter.
-10. AutoGain deja de estimar un nivel ficticio a partir de los valores del EQ. Usa la medición RMS real del mix global mediante Visualizer cuando el dispositivo la admite, con límite y suavizado.
-11. No se añadió RECORD_AUDIO, MediaProjection ni captura PCM de otras aplicaciones.
-12. La persistencia de presets/configuración se mantiene, pero las escrituras durante arrastres de sliders se agrupan con un debounce de 180 ms para evitar escrituras DataStore por frame.
-13. El coalescing del motor agrupa cambios de configuración rápidos antes de tocar el HAL.
-14. El watchdog ya no considera sano un motor que no tenga ningún backend real disponible.
-15. Headroom suma los boosts positivos que pueden coexistir para no subestimar el margen de seguridad.
-16. DynamicsProcessing registra pérdida/recuperación de control mediante AudioEffect y el watchdog puede ejecutar auto-reclaim si otro efecto toma el control de la sesión 0.
+PERSISTENCIA
+UI -> debounce 180 ms -> PresetRepository/DataStore.
+La restauración inicial ahora ocurre en SbAudioService antes de crear los efectos.
 
-RUTA FINAL
-UI -> MainViewModel -> DspConfig.validate() -> DspEngine.updateConfig()
-   -> DynamicsProcessingManager (principal)
-      -> Pre-EQ lógico proyectado -> MBC 4 bandas -> Limiter
-   -> BassBoostManager
-   -> VirtualizerManager
-   -> AudioMeterManager / Visualizer (medición RMS)
+HALLAZGOS Y CORRECCIONES
 
-FALLBACK
-Si DynamicsProcessing no puede crearse, EqualizerManager toma el EQ físico disponible y BassBoost/Virtualizer continúan como complementarios.
+1. Carrera de arranque de configuración — CORREGIDA
+Antes, SbApplication y SbAudioService podían restaurar/usar la configuración en paralelo y el servicio podía crear el backend con DEFAULT antes de recibir el estado persistido.
+Ahora el servicio restaura DataStore primero y recién después inicia el backend global. Las acciones START/TOGGLE esperan a que ese arranque esté listo.
 
-PCM DIRECTO
-DspEngine.processPcm/processInterleaved y PcmAudioPipeline se conservan para uso directo con PCM proporcionado por un consumidor. No se conectan artificialmente al audio de YouTube/Spotify/TikTok porque SB no dispone de una fuente PCM de esas apps y el proyecto explícitamente no usa MediaProjection/RECORD_AUDIO.
+2. Carrera entre configuración y ciclo de vida del DSP — CORREGIDA
+El coalescer del DspEngine podía intentar aplicar una configuración mientras start/recover/stop estaba creando o liberando efectos.
+Ahora las aplicaciones coalescidas se serializan mediante el mismo Mutex del ciclo de vida.
 
-VALIDACIÓN
-- El ZIP mantiene el workflow que instala Gradle 8.5 directamente en GitHub Actions; no depende de gradle-wrapper.jar para el build de Actions.
-- En este entorno local no se pudo ejecutar ./gradlew porque el ZIP no contiene gradle-wrapper.jar. Esto no equivale a un fallo del workflow: la acción usa gradle/actions/setup-gradle para instalar Gradle 8.5.
-- Antes de considerar el APK validado, GitHub Actions debe completar test + assembleRelease y producir release-output/SB.apk.
+3. AutoGain no seguía continuamente la medición RMS — CORREGIDO
+La medición se actualizaba periódicamente, pero la ganancia efectiva sólo se aplicaba cuando cambiaba la configuración.
+Ahora AutoGain recalcula su corrección durante el ciclo de medición y modifica únicamente la ganancia de entrada cuando cambia de forma significativa. No reescribe EQ/MDRC/limiter en cada medición.
+
+4. Escrituras innecesarias de DynamicsProcessing — OPTIMIZADAS
+DynamicsProcessingManager ahora diferencia cambios de:
+- EQ/Tone
+- MDRC/crossovers
+- Limiter
+- ganancias de entrada
+Un movimiento de Master/Balance/AutoGain no provoca una reescritura completa de EQ/MDRC/limiter.
+Los cambios de EQ siguen usando coalescing en HandlerThread.
+
+5. Seguridad del escritor de EQ frente a release/recovery — CORREGIDA
+La escritura asíncrona del EQ y la liberación/reconstrucción de DynamicsProcessing ahora están sincronizadas para evitar que el worker escriba sobre una instancia que está siendo liberada.
+
+6. BassBoost/Virtualizer — OPTIMIZADOS
+Se evita repetir setStrength y readback del driver cuando el valor no cambió.
+El efecto sigue siendo habilitado/deshabilitado según DspConfig.
+
+7. Fallback Equalizer — OPTIMIZADO
+Cuando DynamicsProcessing no está disponible, el Equalizer nativo sólo reescribe sus bandas cuando la configuración efectiva cambió.
+
+8. MDRC externo — VALIDADO
+Los crossovers se actualizan mediante setters de las bandas MBC existentes; no se reconstruye DynamicsProcessing por mover un crossover.
+Los límites lógicos se mantienen en 20–22000 Hz y los cuatro cortes permanecen estrictamente ascendentes mediante DspConfig.validate().
+
+9. Gain Reduction — CORREGIDO PARA NO ENGAÑAR
+DynamicsProcessing no expone al cliente la reducción interna del MBC. Se eliminó el estado/medidor que podía mostrar cero como si fuese una lectura real del hardware.
+MdrcProcessor continúa disponible exclusivamente para la ruta PCM directa que sí procesa muestras.
+
+10. Ruta PCM directa — OPTIMIZADA
+PcmAudioPipeline no se conecta artificialmente al audio de otras aplicaciones.
+processInterleaved() reutiliza buffers en lugar de crear dos FloatArray por llamada.
+Los parámetros estructurales de Bass Boost, Tone, EQ y MDRC sólo se recalculan cuando cambian.
+
+11. EQ lógico — CONSERVADO
+DspConfig mantiene exactamente EQ10/EQ20/EQ32 y las 32 frecuencias lógicas de EQ32.
+DynamicsProcessing proyecta las bandas lógicas sobre el número físico que el HAL acepta. No se confunde el modelo lógico con la cantidad física real de filtros.
+
+12. Orden y limitaciones del backend externo
+La API pública de DynamicsProcessing permite controlar directamente Pre-EQ, MBC, limiter y ganancias de entrada, pero no ofrece un Master Gain/Balance posterior al limiter ni permite a SB imponer el orden global entre efectos independientes como BassBoost/Virtualizer.
+Por eso esos controles se aplican en los puntos que la API realmente permite. No se simula una ruta PCM inexistente.
+
+13. Watchdog
+El watchdog continúa verificando la salud del backend real y puede recuperar la instancia si Android/vendor invalida el efecto.
+Los estados de inicialización del motor relevantes para el watchdog están marcados como visibles entre hilos.
+
+ARCHIVOS MODIFICADOS
+1. app/src/main/java/com/sb/SbApplication.kt
+2. app/src/main/java/com/sb/audio/SbAudioService.kt
+3. app/src/main/java/com/sb/dsp/DspEngine.kt
+4. app/src/main/java/com/sb/dsp/DynamicsProcessingManager.kt
+5. app/src/main/java/com/sb/dsp/BassBoostManager.kt
+6. app/src/main/java/com/sb/dsp/VirtualizerManager.kt
+7. app/src/main/java/com/sb/dsp/EqualizerManager.kt
+8. app/src/main/java/com/sb/dsp/PcmAudioPipeline.kt
+9. app/src/main/java/com/sb/ui/MainViewModel.kt
+10. app/src/main/java/com/sb/ui/screens/DynamicsScreen.kt
+11. AUDIT-GENERAL.txt
+
+ARCHIVOS NO MODIFICADOS
+- DspConfig.kt
+- PresetRepository.kt
+- MdrcProcessor.kt
+- ConstantQGraphicEq.kt
+- CapabilityAdapter.kt
+- AudioSessionManager.kt
+- AudioSessionReceiver.kt
+- AudioMeterManager.kt
+- AutoGainManager.kt
+- HeadroomManager.kt
+- ToneManager.kt
+- Manifest y workflow de CI
+
+VALIDACIÓN ESTÁTICA
+- Kotlin del proyecto revisado: sin desbalance básico de llaves/paréntesis.
+- No quedaron referencias al estado eliminado de Gain Reduction.
+- No se encontró la referencia prohibida en el código/documentación auditados.
+- Se conserva el workflow que instala Gradle 8.5 directamente en GitHub Actions.
+
+VALIDACIÓN DE COMPILACIÓN
+El entorno local disponible no tiene Gradle instalado y el ZIP no contiene gradle-wrapper.jar ejecutable localmente. Por ello no se afirma una compilación local.
+La validación definitiva debe hacerse mediante GitHub Actions con:
+1. gradle test --stacktrace
+2. gradle assembleRelease --stacktrace
+3. verificación de release-output/SB.apk
+
+RESULTADO
+La optimización se concentra en el camino real de audio externo: menos escrituras al HAL, actualizaciones serializadas, AutoGain funcional durante la reproducción, restauración determinista de configuración y eliminación de indicadores que no podían representar mediciones reales.
