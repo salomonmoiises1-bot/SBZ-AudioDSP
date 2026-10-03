@@ -1,1 +1,3 @@
-# sBz Next intentionally ships without obfuscation in the first production build.
+# SB - Proguard Rules
+-keep class com.sb.** { *; }
+-keepclassmembers class com.sb.** { *; }
