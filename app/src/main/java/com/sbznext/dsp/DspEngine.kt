@@ -2,78 +2,104 @@ package com.sbznext.dsp
 
 import android.media.audiofx.DynamicsProcessing
 import android.media.audiofx.Virtualizer
-import kotlin.math.*
+import android.os.Handler
+import android.os.Looper
+import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.max
 
 /**
- * Real-time stereo PCM DSP engine.
+ * Global Android DSP engine.
  *
- * Configuration changes are coalesced through pendingConfig and applied only at
- * the audio-thread boundary. process() performs no heap allocations.
+ * The production path is a single DynamicsProcessing effect on session 0.
+ * No AudioRecord/AudioTrack/MediaProjection copy path is used, so the original
+ * media signal is not mixed with a delayed software copy.
+ *
+ * The EQ is configured explicitly with 32 bands instead of accepting the
+ * device's default band count. This is the same class of architecture used by
+ * Equalizer314: global session 0 + DynamicsProcessing. Android's Config.Builder
+ * allows the application to choose the EQ band count at effect creation time.
  */
 class DspEngine(private val sampleRate: Int) {
     companion object {
-        private const val EQ_Q = 4.318f
-        private const val MIN_DB = -96f
-        private const val MAX_DB = 24f
-        private const val EPS = 1e-8f
         const val GLOBAL_AUDIO_SESSION = 0
-        const val EFFECT_PRIORITY = 100
+        private const val EFFECT_PRIORITY = 100
+        private const val EQ_BANDS = 32
+        private const val MDRC_BANDS = 4
+        private const val MIN_FREQ = 20f
+        private const val MIN_DB = -24f
+        private const val MAX_DB = 24f
+        private const val DEFAULT_FRAME_MS = 10f
     }
 
-    private val nyquist = (sampleRate * 0.5f)
-    val frequencies = DspConfig.FREQUENCIES
-
-    private val eq = Array(32) { Biquad(sampleRate.toFloat()) }
-    private val bass = Biquad(sampleRate.toFloat())
-    private val toneMid = Biquad(sampleRate.toFloat())
-    private val treble = Biquad(sampleRate.toFloat())
-
-    // MDRC crossover: one LPF per boundary. Bands are reconstructed as
-    // LP(0), LP(1)-LP(0), LP(2)-LP(1), LP(3)-LP(2), input-LP(3).
-    private val mdrcLp = Array(4) { Biquad(sampleRate.toFloat()) }
-    private val comps = Array(4) { Compressor(sampleRate.toFloat()) }
+    private val nyquist = (sampleRate * 0.5f).coerceAtLeast(1000f)
 
     @Volatile private var config = DspConfig()
     @Volatile private var pendingConfig: DspConfig? = null
 
     private var dynamics: DynamicsProcessing? = null
     private var virtualizer: Virtualizer? = null
+    private var updateHandler: Handler? = null
 
-    @Volatile var lastPeak = 0f
+    @Volatile var activeEqBands: Int = 0
         private set
+
     @Volatile var lastAutoGainDb = 0f
         private set
     @Volatile var clipping = false
         private set
 
-    private var autoEnvelope = 0f
-    private var autoGain = 1f
-
     init {
-        apply(config)
+        config = sanitize(config)
     }
 
-    /**
-     * Starts the system-wide effect path. No AudioRecord/AudioTrack is created here:
-     * Android's mixer remains the single audio path, so the processed signal is not
-     * mixed with a delayed copy of the original.
-     */
     @Synchronized
     fun start() {
         if (dynamics != null) return
-        if (android.os.Build.VERSION.SDK_INT < 28) {
-            throw UnsupportedOperationException("DynamicsProcessing requiere Android 9+")
+        check(android.os.Build.VERSION.SDK_INT >= 28) {
+            "DynamicsProcessing requiere Android 9+"
         }
 
-        val dp = DynamicsProcessing(EFFECT_PRIORITY, GLOBAL_AUDIO_SESSION, null)
-        dp.enabled = true
+        val channelCount = 2
+        val dp = createDynamics(channelCount)
         dynamics = dp
+        activeEqBands = dp.config.preEqBandCount
+        updateHandler = Handler(Looper.getMainLooper())
 
         runCatching {
-            val v = Virtualizer(EFFECT_PRIORITY, GLOBAL_AUDIO_SESSION)
-            virtualizer = v
+            virtualizer = Virtualizer(EFFECT_PRIORITY, GLOBAL_AUDIO_SESSION)
         }
+
         applyNative(config)
+    }
+
+    private fun createDynamics(channelCount: Int): DynamicsProcessing {
+        var last: Throwable? = null
+        for (bands in intArrayOf(EQ_BANDS, 16, 10, 5)) {
+            try {
+                val builder = DynamicsProcessing.Config.Builder(
+                    DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                    channelCount,
+                    true,
+                    bands,
+                    true,
+                    MDRC_BANDS,
+                    false,
+                    0,
+                    true
+                ).apply {
+                    setPreferredFrameDuration(DEFAULT_FRAME_MS)
+                }
+                return DynamicsProcessing(
+                    EFFECT_PRIORITY,
+                    GLOBAL_AUDIO_SESSION,
+                    builder.build()
+                )
+            } catch (t: Throwable) {
+                last = t
+            }
+        }
+        throw last ?: IllegalStateException("No se pudo crear DynamicsProcessing")
     }
 
     @Synchronized
@@ -82,137 +108,243 @@ class DspEngine(private val sampleRate: Int) {
         runCatching { virtualizer?.release() }
         virtualizer = null
         runCatching { dynamics?.enabled = false }
+        runCatching { updateHandler?.removeCallbacksAndMessages(null) }
+        updateHandler = null
         runCatching { dynamics?.release() }
         dynamics = null
+    }
+
+    fun isRunning(): Boolean = dynamics != null
+
+    fun update(input: DspConfig) {
+        val sanitized = sanitize(input)
+        config = sanitized
+        pendingConfig = sanitized
+        if (dynamics != null) {
+            val handler = updateHandler
+            if (handler != null) {
+                handler.removeCallbacks(applyRunnable)
+                handler.postDelayed(applyRunnable, 35L)
+            } else {
+                applyPending()
+            }
+        }
+    }
+
+    fun snapshot(): DspConfig = config
+
+    private val applyRunnable = Runnable { applyPending() }
+
+    /**
+     * Kept as a deterministic offline/unit-test path. Production audio does not
+     * enter here; Android's global DynamicsProcessing instance is the live path.
+     */
+    fun process(buf: FloatArray) {
+        val c = pendingConfig ?: config
+        pendingConfig = null
+        config = c
+
+        val master = dbToLinear(c.preGainDb + c.masterGainDb + autoCompensationDb(c))
+        val ceiling = dbToLinear(c.limiterCeilingDb)
+        var peak = 0f
+        var i = 0
+        while (i + 1 < buf.size) {
+            var l = buf[i] * master
+            var r = buf[i + 1] * master
+            if (c.spatialEnabled) {
+                val mid = (l + r) * 0.5f
+                val side = (l - r) * 0.5f * c.spatialWidth
+                l = mid + side
+                r = mid - side
+            }
+            val bal = c.balance
+            if (bal > 0f) l *= 1f - bal else if (bal < 0f) r *= 1f + bal
+            if (c.limiterEnabled) {
+                l = softCeiling(l, ceiling)
+                r = softCeiling(r, ceiling)
+            }
+            if (!l.isFinite()) l = 0f
+            if (!r.isFinite()) r = 0f
+            buf[i] = l.coerceIn(-1f, 1f)
+            buf[i + 1] = r.coerceIn(-1f, 1f)
+            peak = max(peak, max(abs(buf[i]), abs(buf[i + 1])))
+            i += 2
+        }
+        lastAutoGainDb = autoCompensationDb(c)
+        clipping = peak >= 0.999f
+    }
+
+    private fun applyPending() {
+        val next = pendingConfig ?: return
+        pendingConfig = null
+        applyNative(next)
     }
 
     private fun applyNative(c: DspConfig) {
         val dp = dynamics ?: return
         runCatching {
+            val cfg = dp.config
+            val channels = cfg.channelCount.coerceAtLeast(1)
+            val bandCount = cfg.preEqBandCount.coerceAtMost(EQ_BANDS)
+
             dp.enabled = c.enabled
 
-            val cfg = dp.config
-            val channels = dp.channelCount.coerceAtLeast(1)
-            val preCount = cfg.preEqBandCount
-            val postCount = cfg.postEqBandCount
+            val compensation = if (c.autoGainEnabled) autoCompensationDb(c) else 0f
+            lastAutoGainDb = compensation
 
-            for (i in 0 until preCount) {
+            val baseInput = (c.preGainDb + c.masterGainDb + compensation)
+                .coerceIn(MIN_DB, MAX_DB)
+
+            for (ch in 0 until channels) {
+                val gain = when {
+                    ch == 0 && c.balance > 0f -> baseInput + balanceDb(1f - c.balance)
+                    ch == 1 && c.balance < 0f -> baseInput + balanceDb(1f + c.balance)
+                    else -> baseInput
+                }.coerceIn(MIN_DB, MAX_DB)
+                dp.setInputGainbyChannel(ch, gain)
+            }
+
+            // The 32 user bands are mapped one-to-one to the 32 DP pre-EQ bands.
+            // Bass/Tone are folded into the same 32-band curve so there is exactly
+            // one EQ stage in the live path and no duplicated EQ processing.
+            for (i in 0 until bandCount) {
                 val band = cfg.getPreEqBandByChannelIndex(0, i)
-                val hz = band.cutoffFrequency.coerceAtLeast(20f)
-                band.gain = nativeEqGain(c, hz) * if (preCount > 0 && postCount > 0) 0.5f else 1f
-                band.enabled = c.eqEnabled
-                for (ch in 0 until channels) dp.setPreEqBandByChannelIndex(ch, i, band)
-            }
-
-            for (i in 0 until postCount) {
-                val band = cfg.getPostEqBandByChannelIndex(0, i)
-                val hz = band.cutoffFrequency.coerceAtLeast(20f)
-                band.gain = nativeEqGain(c, hz) * if (preCount > 0 && postCount > 0) 0.5f else 1f
-                band.enabled = c.eqEnabled
-                for (ch in 0 until channels) dp.setPostEqBandByChannelIndex(ch, i, band)
-            }
-
-            val autoCompensation = if (c.autoGainEnabled) {
-                var maxPositive = 0f
-                for (hz in DspConfig.FREQUENCIES) {
-                    maxPositive = max(maxPositive, nativeEqGain(c, hz))
+                val mapped = if (bandCount <= 1) 0 else
+                    kotlin.math.round(i * DspConfig.FREQUENCIES.lastIndex.toFloat() / (bandCount - 1)).toInt()
+                val hz = DspConfig.FREQUENCIES[mapped.coerceIn(0, DspConfig.FREQUENCIES.lastIndex)]
+                    .coerceIn(MIN_FREQ, nyquist - 50f)
+                band.cutoffFrequency = hz
+                band.gain = combinedEqGain(c, hz).coerceIn(MIN_DB, MAX_DB)
+                band.enabled = c.enabled && (c.eqEnabled || hasToneControls(c))
+                for (ch in 0 until channels) {
+                    dp.setPreEqBandByChannelIndex(ch, i, band)
                 }
-                (-maxPositive - c.autoGainHeadroomDb).coerceIn(-24f, 0f)
-            } else 0f
-            val baseGain = c.preGainDb + c.masterGainDb + autoCompensation
-            val leftGain = baseGain + if (c.balance < 0f) 20f * log10((1f + c.balance).coerceAtLeast(0.001f)) else 0f
-            val rightGain = baseGain + if (c.balance > 0f) 20f * log10((1f - c.balance).coerceAtLeast(0.001f)) else 0f
-            if (channels > 0) dp.setInputGainbyChannel(0, leftGain.coerceIn(-24f, 24f))
-            if (channels > 1) dp.setInputGainbyChannel(1, rightGain.coerceIn(-24f, 24f))
-            for (ch in 2 until channels) dp.setInputGainbyChannel(ch, baseGain.coerceIn(-24f, 24f))
+            }
 
-            val mbcCount = cfg.mbcBandCount
+            val mbcCount = cfg.mbcBandCount.coerceAtMost(MDRC_BANDS)
             for (i in 0 until mbcCount) {
+                val p = c.mdrcBands[i]
                 val band = cfg.getMbcBandByChannelIndex(0, i)
-                val cutoff = c.mdrcCutoffsHz.getOrElse(i) { c.mdrcCutoffsHz.last() }
-                band.cutoffFrequency = cutoff.coerceAtLeast(20f)
-                val p = c.mdrcBands.getOrElse(i.coerceAtMost(3)) { MdrcBand() }
-                band.enabled = c.mdrcEnabled
+                band.cutoffFrequency = c.mdrcCutoffsHz[i].coerceIn(
+                    MIN_FREQ,
+                    nyquist - 50f
+                )
+                band.enabled = c.enabled && c.mdrcEnabled
                 band.attackTime = p.attackMs
                 band.releaseTime = p.releaseMs
                 band.ratio = p.ratio
                 band.threshold = p.thresholdDb
                 band.preGain = 0f
                 band.postGain = p.makeupDb
-                for (ch in 0 until channels) dp.setMbcBandByChannelIndex(ch, i, band)
+                for (ch in 0 until channels) {
+                    dp.setMbcBandByChannelIndex(ch, i, band)
+                }
             }
 
             for (ch in 0 until channels) {
-                val lim = cfg.getLimiterByChannelIndex(ch)
-                lim.enabled = c.limiterEnabled
-                lim.threshold = c.limiterCeilingDb
-                lim.ratio = 20f
-                lim.attackTime = 1f
-                lim.releaseTime = 80f
-                lim.postGain = 0f
-                dp.setLimiterByChannelIndex(ch, lim)
+                val limiter = cfg.getLimiterByChannelIndex(ch)
+                limiter.enabled = c.enabled && c.limiterEnabled
+                limiter.threshold = c.limiterCeilingDb
+                limiter.ratio = 20f
+                limiter.attackTime = 1f
+                limiter.releaseTime = 80f
+                limiter.postGain = 0f
+                dp.setLimiterByChannelIndex(ch, limiter)
             }
 
-            dp.setEnabled(c.enabled)
+            dp.enabled = c.enabled
         }
 
         runCatching {
             val v = virtualizer ?: return@runCatching
-            v.enabled = c.spatialEnabled
+            v.enabled = c.enabled && c.spatialEnabled
             if (v.strengthSupported) {
-                v.setStrength((c.spatialWidth.coerceIn(0f, 1f) * 1000f).roundToInt().toShort())
+                v.setStrength((c.spatialWidth.coerceIn(0f, 1f) * 1000f).toInt().toShort())
             }
         }
     }
 
-    private fun nativeEqGain(c: DspConfig, hz: Float): Float {
-        val f = DspConfig.FREQUENCIES
-        val g = c.eqGainsDb
-        if (!c.eqEnabled) return 0f
+    private fun hasToneControls(c: DspConfig): Boolean =
+        c.bassBoostDb != 0f || c.toneBassDb != 0f || c.toneMidDb != 0f || c.toneTrebleDb != 0f
 
-        var eqGain = if (hz <= f.first()) g.first() else if (hz >= f.last()) g.last() else {
-            var idx = 0
-            while (idx < f.lastIndex && f[idx + 1] < hz) idx++
-            val loF = ln(f[idx].toDouble())
-            val hiF = ln(f[idx + 1].toDouble())
-            val t = ((ln(hz.toDouble()) - loF) / (hiF - loF)).toFloat()
-            g[idx] + (g[idx + 1] - g[idx]) * t
-        }
-
-        val tone = when {
-            hz < 250f -> c.bassBoostDb + c.toneBassDb
-            hz < 3000f -> c.toneMidDb
-            else -> c.toneTrebleDb
-        }
-        return (eqGain + tone).coerceIn(-24f, 24f)
+    private fun combinedEqGain(c: DspConfig, hz: Float): Float {
+        val eq = if (c.eqEnabled) interpolatedEqGain(c.eqGainsDb, hz) else 0f
+        return (eq + toneGain(c, hz)).coerceIn(MIN_DB, MAX_DB)
     }
 
-    fun update(c: DspConfig) {
-        val sanitized = sanitize(c)
-        config = sanitized
-        pendingConfig = sanitized
-        apply(sanitized)
-        applyNative(sanitized)
+    private fun interpolatedEqGain(gains: FloatArray, hz: Float): Float {
+        if (hz <= DspConfig.FREQUENCIES.first()) return gains.firstOrNull() ?: 0f
+        if (hz >= DspConfig.FREQUENCIES.last()) return gains.lastOrNull() ?: 0f
+        var i = 0
+        while (i < DspConfig.FREQUENCIES.lastIndex && DspConfig.FREQUENCIES[i + 1] < hz) i++
+        val lo = DspConfig.FREQUENCIES[i]
+        val hi = DspConfig.FREQUENCIES[i + 1]
+        val t = ((kotlin.math.ln(hz) - kotlin.math.ln(lo)) /
+            (kotlin.math.ln(hi) - kotlin.math.ln(lo))).coerceIn(0f, 1f)
+        return gains[i] + (gains[i + 1] - gains[i]) * t
     }
 
-    fun snapshot(): DspConfig = config
+    private fun toneGain(c: DspConfig, hz: Float): Float {
+        // Smooth, deterministic shelving-like weighting using the available graphic
+        // bands. Bass Boost is deliberately stronger at the bottom and fades by 250 Hz.
+        val bassWeight = when {
+            hz <= 80f -> 1f
+            hz >= 250f -> 0f
+            else -> (ln(hz / 80f) / ln(250f / 80f)).let { 1f - it }
+        }.coerceIn(0f, 1f)
+        val midWeight = when {
+            hz <= 250f || hz >= 3000f -> 0f
+            hz < 1000f -> (ln(hz / 250f) / ln(1000f / 250f)).toFloat()
+            else -> (1f - ln(hz / 1000f) / ln(3000f / 1000f)).toFloat()
+        }.coerceIn(0f, 1f)
+        val trebleWeight = when {
+            hz <= 3000f -> 0f
+            hz >= 10000f -> 1f
+            else -> (ln(hz / 3000f) / ln(10000f / 3000f)).toFloat()
+        }.coerceIn(0f, 1f)
+        return c.bassBoostDb * bassWeight +
+            c.toneBassDb * bassWeight +
+            c.toneMidDb * midWeight +
+            c.toneTrebleDb * trebleWeight
+    }
+
+    private fun autoCompensationDb(c: DspConfig): Float {
+        var maxGain = 0f
+        for (i in DspConfig.FREQUENCIES.indices) {
+            maxGain = max(maxGain, combinedEqGainWithoutAuto(c, i))
+        }
+        return (-maxGain - c.autoGainHeadroomDb).coerceIn(-24f, 0f)
+    }
+
+    private fun combinedEqGainWithoutAuto(c: DspConfig, i: Int): Float {
+        val hz = DspConfig.FREQUENCIES[i]
+        return (if (c.eqEnabled) c.eqGainsDb[i] else 0f) + toneGain(c, hz)
+    }
+
+    private fun balanceDb(linear: Float): Float =
+        20f * log10(linear.coerceIn(0.001f, 1f))
+
+    private fun softCeiling(x: Float, ceiling: Float): Float {
+        if (ceiling <= 0f) return 0f
+        return (kotlin.math.tanh(x / ceiling) * ceiling).coerceIn(-ceiling, ceiling)
+    }
+
+    private fun dbToLinear(db: Float): Float =
+        kotlin.math.pow(10.0, db.coerceIn(-96f, 24f) / 20.0).toFloat()
 
     private fun sanitize(input: DspConfig): DspConfig {
-        val eqGains = FloatArray(32)
-        for (i in eqGains.indices) {
-            eqGains[i] = input.eqGainsDb.getOrElse(i) { 0f }.coerceIn(-24f, 24f)
+        val eq = FloatArray(EQ_BANDS) { i ->
+            input.eqGainsDb.getOrElse(i) { 0f }.coerceIn(MIN_DB, MAX_DB)
         }
-
-        val cuts = FloatArray(4)
-        var previous = 19f
-        for (i in cuts.indices) {
-            val maxCut = if (i == 3) nyquist - 50f else nyquist - 100f
-            cuts[i] = input.mdrcCutoffsHz.getOrElse(i) { DspConfig().mdrcCutoffsHz[i] }
-                .coerceIn(previous + 1f, maxCut)
+        val cuts = FloatArray(MDRC_BANDS)
+        var previous = MIN_FREQ - 1f
+        for (i in 0 until MDRC_BANDS) {
+            val maxCut = (nyquist - 50f).coerceAtLeast(previous + 2f)
+            val requested = input.mdrcCutoffsHz.getOrElse(i) { DspConfig().mdrcCutoffsHz[i] }
+            cuts[i] = requested.coerceIn(previous + 1f, maxCut)
             previous = cuts[i]
         }
-
-        val bands = Array(4) { i ->
+        val bands = Array(MDRC_BANDS) { i ->
             val b = input.mdrcBands.getOrElse(i) { MdrcBand() }
             b.copy(
                 thresholdDb = b.thresholdDb.coerceIn(-60f, 0f),
@@ -222,14 +354,13 @@ class DspEngine(private val sampleRate: Int) {
                 makeupDb = b.makeupDb.coerceIn(-24f, 24f)
             )
         }
-
         return input.copy(
             preGainDb = input.preGainDb.coerceIn(-24f, 24f),
             bassBoostDb = input.bassBoostDb.coerceIn(-24f, 24f),
             toneBassDb = input.toneBassDb.coerceIn(-24f, 24f),
             toneMidDb = input.toneMidDb.coerceIn(-24f, 24f),
             toneTrebleDb = input.toneTrebleDb.coerceIn(-24f, 24f),
-            eqGainsDb = eqGains,
+            eqGainsDb = eq,
             mdrcCutoffsHz = cuts,
             mdrcBands = bands,
             autoGainHeadroomDb = input.autoGainHeadroomDb.coerceIn(0f, 12f),
@@ -240,157 +371,4 @@ class DspEngine(private val sampleRate: Int) {
         )
     }
 
-    private fun apply(c: DspConfig) {
-        for (i in eq.indices) {
-            eq[i].peaking(frequencies[i], EQ_Q, if (c.eqEnabled) c.eqGainsDb[i] else 0f)
-        }
-
-        bass.lowShelf(100f.coerceAtMost(nyquist - 100f), 0.8f, c.bassBoostDb + c.toneBassDb)
-        toneMid.peaking(1000f.coerceAtMost(nyquist - 100f), 0.9f, c.toneMidDb)
-        treble.highShelf(6000f.coerceAtMost(nyquist - 100f), 0.8f, c.toneTrebleDb)
-
-        for (i in mdrcLp.indices) {
-            mdrcLp[i].lowPass(c.mdrcCutoffsHz[i].coerceIn(20f, nyquist - 50f))
-        }
-
-        autoEnvelope = 0f
-        autoGain = 1f
-        lastAutoGainDb = 0f
-    }
-
-    fun process(buf: FloatArray) {
-        val pending = pendingConfig
-        if (pending != null) {
-            config = pending
-            pendingConfig = null
-            apply(pending)
-            applyNative(pending)
-        }
-
-        val c = config
-        if (!c.enabled) return
-
-        val n = buf.size and -2
-        var peak = 0f
-        var i = 0
-
-        val pre = dbToLinear(c.preGainDb)
-        val master = dbToLinear(c.masterGainDb)
-        val ceiling = dbToLinear(c.limiterCeilingDb)
-
-        while (i < n) {
-            var l = buf[i] * pre
-            var r = buf[i + 1] * pre
-
-            l = bass.processL(l)
-            r = bass.processR(r)
-            l = toneMid.processL(l)
-            r = toneMid.processR(r)
-            l = treble.processL(l)
-            r = treble.processR(r)
-
-            if (c.eqEnabled) {
-                for (f in eq.indices) {
-                    l = eq[f].processL(l)
-                    r = eq[f].processR(r)
-                }
-            }
-
-            if (c.mdrcEnabled) {
-                val p0L = mdrcLp[0].processL(l)
-                val p0R = mdrcLp[0].processR(r)
-                val p1L = mdrcLp[1].processL(l)
-                val p1R = mdrcLp[1].processR(r)
-                val p2L = mdrcLp[2].processL(l)
-                val p2R = mdrcLp[2].processR(r)
-                val p3L = mdrcLp[3].processL(l)
-                val p3R = mdrcLp[3].processR(r)
-
-                val b0Gain = comps[0].processGain(p0L, p0R, c.mdrcBands[0])
-                val b1L = p1L - p0L
-                val b1R = p1R - p0R
-                val b1Gain = comps[1].processGain(b1L, b1R, c.mdrcBands[1])
-                val b2L = p2L - p1L
-                val b2R = p2R - p1R
-                val b2Gain = comps[2].processGain(b2L, b2R, c.mdrcBands[2])
-                val b3L = p3L - p2L
-                val b3R = p3R - p2R
-                val b3Gain = comps[3].processGain(b3L, b3R, c.mdrcBands[3])
-                val b4L = l - p3L
-                val b4R = r - p3R
-
-                // The four user MDRC bands map to 0..x1, x1..x2,
-                // x2..x3 and x3..high; the final high band is left uncompressed.
-                l = p0L * b0Gain + b1L * b1Gain + b2L * b2Gain + b3L * b3Gain + b4L
-                r = p0R * b0Gain + b1R * b1Gain + b2R * b2Gain + b3R * b3Gain + b4R
-            }
-
-            if (c.autoGainEnabled) {
-                val inst = max(abs(l), abs(r))
-                val attack = exp((-1f / (10f * 0.001f * sampleRate)).toDouble()).toFloat()
-                val release = exp((-1f / (250f * 0.001f * sampleRate)).toDouble()).toFloat()
-                autoEnvelope = if (inst > autoEnvelope) {
-                    attack * autoEnvelope + (1f - attack) * inst
-                } else {
-                    release * autoEnvelope + (1f - release) * inst
-                }
-
-                val levelDb = 20f * log10(autoEnvelope.coerceAtLeast(EPS))
-                val desiredDb = (-c.autoGainHeadroomDb - levelDb)
-                    .coerceIn(-24f, 0f)
-                val target = dbToLinear(desiredDb)
-                val smoothing = if (target < autoGain) 0.985f else 0.999f
-                autoGain = smoothing * autoGain + (1f - smoothing) * target
-                l *= autoGain
-                r *= autoGain
-            }
-
-            if (c.spatialEnabled) {
-                val mid = (l + r) * 0.5f
-                val side = (l - r) * 0.5f * c.spatialWidth
-                l = mid + side
-                r = mid - side
-            }
-
-            val bal = c.balance
-            val lg = if (bal > 0f) 1f - bal else 1f
-            val rg = if (bal < 0f) 1f + bal else 1f
-            l *= lg * master
-            r *= rg * master
-
-            if (c.limiterEnabled) {
-                l = fastLimiter(l, ceiling)
-                r = fastLimiter(r, ceiling)
-            }
-
-            if (!l.isFinite()) l = 0f
-            if (!r.isFinite()) r = 0f
-
-            // Final safety clamp only; the limiter above handles normal operation.
-            l = l.coerceIn(-1f, 1f)
-            r = r.coerceIn(-1f, 1f)
-
-            peak = max(peak, max(abs(l), abs(r)))
-            buf[i] = l
-            buf[i + 1] = r
-            i += 2
-        }
-
-        lastPeak = peak
-        lastAutoGainDb = linearToDb(autoGain)
-        clipping = peak >= 0.999f
-    }
-
-    private fun fastLimiter(x: Float, ceiling: Float): Float {
-        if (ceiling <= 0f || !ceiling.isFinite()) return 0f
-        // Smooth saturation with a strict asymptotic ceiling. It avoids the
-        // hard discontinuity of a sample-by-sample clamp.
-        return (tanh(x / ceiling) * ceiling).coerceIn(-ceiling, ceiling)
-    }
-
-    private fun dbToLinear(db: Float): Float =
-        10.0.pow((db.coerceIn(MIN_DB, MAX_DB)) / 20.0).toFloat()
-
-    private fun linearToDb(value: Float): Float =
-        20f * log10(value.coerceAtLeast(EPS))
 }
