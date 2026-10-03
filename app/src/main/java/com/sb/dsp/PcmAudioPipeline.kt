@@ -19,7 +19,8 @@ import kotlin.math.*
  * 9. Master Gain (-20 dB a +12 dB)
  * 10. Balance (-1.0 Izq a +1.0 Der)
  *
- * Cero asignaciones de memoria dentro del bucle de audio (Zero Allocations).
+ * El procesamiento por bloque evita asignaciones de buffers; las primitivas DSP
+ * existentes mantienen su API de retorno de pares para compatibilidad.
  */
 class PcmAudioPipeline(
     var sampleRate: Float = 48000f
@@ -37,6 +38,12 @@ class PcmAudioPipeline(
 
     // Limitador Brickwall PCM
     private var limiterEnvelope = 0f
+
+    // Buffers reutilizables para processInterleaved().
+    private var scratchLeft = FloatArray(0)
+    private var scratchRight = FloatArray(0)
+
+    private var lastConfig: DspConfig? = null
 
     init {
         updateBassBoostFilter(0)
@@ -92,21 +99,46 @@ class PcmAudioPipeline(
         val totalPreDb = config.preGain + autoHeadroomDb + autoGainDb
         val preGainLinear = 10.0.pow(totalPreDb / 20.0).toFloat()
 
-        // 2. Bass Boost factor
-        if (config.bassBoostEnabled) {
-            updateBassBoostFilter(config.bassBoostStrength)
-        } else {
-            updateBassBoostFilter(0)
+        val previous = lastConfig
+
+        // Sólo recalcular parámetros estructurales cuando realmente cambiaron.
+        if (previous == null ||
+            previous.bassBoostEnabled != config.bassBoostEnabled ||
+            previous.bassBoostStrength != config.bassBoostStrength
+        ) {
+            updateBassBoostFilter(if (config.bassBoostEnabled) config.bassBoostStrength else 0)
         }
 
-        // 3. Tone
-        toneManager.applyConfig(config)
+        if (previous == null ||
+            previous.toneBass != config.toneBass ||
+            previous.toneMid != config.toneMid ||
+            previous.toneTreble != config.toneTreble
+        ) {
+            toneManager.applyConfig(config)
+        }
 
-        // 4. EQ32
-        eqProcessor.updateConfig(config)
+        if (previous == null ||
+            previous.eqMode != config.eqMode ||
+            previous.activeEqGains() != config.activeEqGains()
+        ) {
+            eqProcessor.updateConfig(config)
+        }
 
-        // 5. MDRC
-        mdrcProcessor.updateConfig(config)
+        if (previous == null ||
+            previous.mdrcEnabled != config.mdrcEnabled ||
+            previous.mdrcBand1 != config.mdrcBand1 ||
+            previous.mdrcBand2 != config.mdrcBand2 ||
+            previous.mdrcBand3 != config.mdrcBand3 ||
+            previous.mdrcBand4 != config.mdrcBand4 ||
+            previous.mdrcCutoff1 != config.mdrcCutoff1 ||
+            previous.mdrcCutoff2 != config.mdrcCutoff2 ||
+            previous.mdrcCutoff3 != config.mdrcCutoff3 ||
+            previous.mdrcCutoff4 != config.mdrcCutoff4
+        ) {
+            mdrcProcessor.updateConfig(config)
+        }
+
+        lastConfig = config
 
         // Master Gain & Balance factores
         val masterLinear = 10.0.pow(config.masterGain / 20.0).toFloat()
@@ -193,16 +225,25 @@ class PcmAudioPipeline(
      * Procesa un buffer estéreo intercalado [L0, R0, L1, R1, ...].
      */
     fun processInterleaved(buffer: FloatArray, frameCount: Int, config: DspConfig) {
-        val left = FloatArray(frameCount)
-        val right = FloatArray(frameCount)
-        for (i in 0 until frameCount) {
-            left[i] = buffer[i * 2]
-            right[i] = buffer[i * 2 + 1]
+        require(frameCount >= 0 && frameCount * 2 <= buffer.size) {
+            "frameCount incompatible con el buffer intercalado"
         }
-        processBlock(left, right, 0, frameCount, config)
+
+        if (scratchLeft.size < frameCount) {
+            scratchLeft = FloatArray(frameCount)
+            scratchRight = FloatArray(frameCount)
+        }
+
         for (i in 0 until frameCount) {
-            buffer[i * 2] = left[i]
-            buffer[i * 2 + 1] = right[i]
+            scratchLeft[i] = buffer[i * 2]
+            scratchRight[i] = buffer[i * 2 + 1]
+        }
+
+        processBlock(scratchLeft, scratchRight, 0, frameCount, config)
+
+        for (i in 0 until frameCount) {
+            buffer[i * 2] = scratchLeft[i]
+            buffer[i * 2 + 1] = scratchRight[i]
         }
     }
 }

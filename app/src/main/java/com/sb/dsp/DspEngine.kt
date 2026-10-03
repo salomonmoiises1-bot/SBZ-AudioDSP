@@ -42,9 +42,6 @@ class DspEngine(
     private val _capabilities = MutableStateFlow(DspCapabilities())
     val capabilities: StateFlow<DspCapabilities> = _capabilities.asStateFlow()
 
-    private val _mdrcGainReduction = MutableStateFlow(floatArrayOf(0f, 0f, 0f, 0f))
-    val mdrcGainReduction: StateFlow<FloatArray> = _mdrcGainReduction.asStateFlow()
-
     private val dynamicsProcessingManager = DynamicsProcessingManager()
     private val equalizerManager = EqualizerManager()
     private val bassBoostManager = BassBoostManager()
@@ -52,9 +49,14 @@ class DspEngine(
     private val autoGainManager = AutoGainManager()
     private val audioMeterManager = AudioMeterManager()
 
+    @Volatile
     private var activeSessionId = GLOBAL_SESSION_ID
+    @Volatile
     private var isInitialized = false
+    @Volatile
     private var usingDynamicsProcessing = false
+    @Volatile
+    private var lastAppliedAutoGainDb = Float.NaN
 
     private val watchdog = DspWatchdog(externalScope) { reason ->
         Log.w(TAG, "Watchdog activó recuperación: $reason")
@@ -69,7 +71,9 @@ class DspEngine(
                 // Coalescer corto: el último movimiento del control gana y no se
                 // generan decenas de transacciones DP durante un drag.
                 delay(12L)
-                applyConfigInternal(pending)
+                engineMutex.withLock {
+                    applyConfigInternal(pending)
+                }
             }
         }
 
@@ -78,13 +82,24 @@ class DspEngine(
                 delay(100L)
                 autoGainManager.updateMeasuredRms(audioMeterManager.readRmsDb())
                 val cfg = _config.value
-                _mdrcGainReduction.value = if (cfg.dspEnabled && cfg.mdrcEnabled) {
-                    // Android no expone el gain-reduction interno del MBC; este valor
-                    // se conserva sólo para la visualización/diagnóstico existente.
-                    dynamicsProcessingManager.getGainReductionDb()
-                } else {
-                    floatArrayOf(0f, 0f, 0f, 0f)
+
+                // AutoGain debe seguir la medición RMS aunque ningún control de UI
+                // cambie. Sólo se toca la ganancia de entrada, no toda la cadena.
+                if (cfg.dspEnabled && cfg.autoGainEnabled && isInitialized && usingDynamicsProcessing) {
+                    val headroomDb = HeadroomManager.calculateRequiredHeadroomDb(cfg)
+                    val autoGainDb = autoGainManager.calculateEffectiveGain(cfg, headroomDb)
+                    if (!lastAppliedAutoGainDb.isFinite() ||
+                        kotlin.math.abs(autoGainDb - lastAppliedAutoGainDb) >= 0.02f
+                    ) {
+                        engineMutex.withLock {
+                            if (isInitialized && usingDynamicsProcessing) {
+                                dynamicsProcessingManager.applyInputGain(cfg, headroomDb, autoGainDb)
+                                lastAppliedAutoGainDb = autoGainDb
+                            }
+                        }
+                    }
                 }
+
             }
         }
     }
@@ -196,8 +211,10 @@ class DspEngine(
         // de procesamiento real en vez de dejar la interfaz sin efecto audible.
         if (usingDynamicsProcessing) {
             dynamicsProcessingManager.applyConfig(config, headroomDb, autoGainDb)
+            lastAppliedAutoGainDb = autoGainDb
         } else {
             equalizerManager.applyConfig(config)
+            lastAppliedAutoGainDb = Float.NaN
         }
 
         bassBoostManager.applyConfig(config)
@@ -240,6 +257,7 @@ class DspEngine(
         virtualizerManager.release()
         audioMeterManager.release()
         autoGainManager.reset()
+        lastAppliedAutoGainDb = Float.NaN
         isInitialized = false
         usingDynamicsProcessing = false
     }

@@ -13,6 +13,7 @@ class BassBoostManager {
     }
 
     private var bassBoost: BassBoost? = null
+    private var lastStrength = -1
     var isAvailable: Boolean = false
         private set
     var isStrengthSupported: Boolean = false
@@ -49,14 +50,13 @@ class BassBoostManager {
                 effect.enabled = shouldEnable
             }
 
-            if (shouldEnable && isStrengthSupported) {
-                val clampedStrength = config.bassBoostStrength.coerceIn(0, 1000).toShort()
-                effect.setStrength(clampedStrength)
-
-                // Readback para verificar valor real aplicado por el driver de audio
-                val actualStrength = effect.roundedStrength
-                Log.v(TAG, "BassBoost aplicado: solicitado=${config.bassBoostStrength}, actual=$actualStrength")
+            val strength = config.bassBoostStrength.coerceIn(0, 1000)
+            if (shouldEnable && isStrengthSupported && strength != lastStrength) {
+                effect.setStrength(strength.toShort())
+                Log.v(TAG, "BassBoost aplicado: solicitado=$strength, actual=${effect.roundedStrength}")
             }
+
+            lastStrength = if (shouldEnable) strength else -1
         } catch (e: Exception) {
             Log.e(TAG, "Fallo al aplicar BassBoost: ${e.message}", e)
         }
@@ -71,6 +71,8 @@ class BassBoostManager {
         } finally {
             bassBoost = null
             isAvailable = false
+            isStrengthSupported = false
+            lastStrength = -1
         }
     }
 }

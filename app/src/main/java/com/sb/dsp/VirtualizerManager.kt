@@ -21,6 +21,7 @@ class VirtualizerManager {
     }
 
     private var virtualizer: Virtualizer? = null
+    private var lastStrength = -1
     var status: VirtualizerStatus = VirtualizerStatus.UNAVAILABLE
         private set
     var isStrengthSupported: Boolean = false
@@ -53,8 +54,11 @@ class VirtualizerManager {
 
             if (shouldEnable) {
                 if (isStrengthSupported) {
-                    val strength = config.virtualizerStrength.coerceIn(0, 1000).toShort()
-                    effect.setStrength(strength)
+                    val strength = config.virtualizerStrength.coerceIn(0, 1000)
+                    if (strength != lastStrength) {
+                        effect.setStrength(strength.toShort())
+                        lastStrength = strength
+                    }
                 }
                 status = VirtualizerStatus.ACTIVE
             } else {
@@ -75,6 +79,8 @@ class VirtualizerManager {
         } finally {
             virtualizer = null
             status = VirtualizerStatus.UNAVAILABLE
+            isStrengthSupported = false
+            lastStrength = -1
         }
     }
 }
