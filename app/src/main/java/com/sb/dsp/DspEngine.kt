@@ -19,8 +19,9 @@ import kotlinx.coroutines.sync.withLock
  * Autoridad única del motor DSP.
  *
  * Para audio externo la ruta real es AudioEffect sobre sesión 0, con
- * DynamicsProcessing como único backend principal de la cadena DSP. No existe
- * fallback a android.media.audiofx.Equalizer ni una ruta PCM propia.
+ * DynamicsProcessing como backend principal de la cadena DSP. Si el fabricante
+ * rechaza DynamicsProcessing en sesión 0, se activa el Equalizer nativo como
+ * backend de compatibilidad para que el DSP no quede inerte.
  */
 class DspEngine(
     private val context: Context,
@@ -45,6 +46,7 @@ class DspEngine(
     val mdrcGainReduction: StateFlow<FloatArray> = _mdrcGainReduction.asStateFlow()
 
     private val dynamicsProcessingManager = DynamicsProcessingManager()
+    private val equalizerManager = EqualizerManager()
     private val bassBoostManager = BassBoostManager()
     private val virtualizerManager = VirtualizerManager()
     private val autoGainManager = AutoGainManager()
@@ -117,7 +119,14 @@ class DspEngine(
             usingDynamicsProcessing = dpOk
 
             if (!dpOk) {
-                throw IllegalStateException("DynamicsProcessing no disponible en sesión 0")
+                // Fallback real: algunos HAL/vendor no permiten crear
+                // DynamicsProcessing en sesión 0 aunque sí permitan Equalizer.
+                // En ese caso mantenemos una ruta de procesamiento funcional.
+                val eqOk = equalizerManager.initialize(GLOBAL_SESSION_ID)
+                if (!eqOk) {
+                    throw IllegalStateException("No hay backend DSP disponible en sesión 0")
+                }
+                Log.w(TAG, "DynamicsProcessing no disponible; usando Equalizer nativo como fallback")
             }
 
             // BassBoost/Virtualizer son efectos complementarios que, cuando el
@@ -130,21 +139,19 @@ class DspEngine(
             _capabilities.value = DspCapabilities(
                 sessionId = GLOBAL_SESSION_ID,
                 isSessionZeroSupported = true,
-                // SB no longer creates/uses android.media.audiofx.Equalizer.
-                // The physical EQ reported here is DynamicsProcessing Pre-EQ.
-                hasEqualizer = false,
-                nativeEqBands = 0,
-                nativeEqMinLevelMb = (-1500).toShort(),
-                nativeEqMaxLevelMb = 1500.toShort(),
-                nativeEqCenterFreqsHz = emptyList(),
-                hasDynamicsProcessing = true,
-                dpChannelCount = dynamicsProcessingManager.backendInfo.channelCount,
+                hasEqualizer = !dpOk && equalizerManager.isAvailable,
+                nativeEqBands = if (!dpOk) equalizerManager.numberOfBands.toInt() else dynamicsProcessingManager.backendInfo.preEqBandCount,
+                nativeEqMinLevelMb = if (!dpOk) equalizerManager.minLevelMb else (-1500).toShort(),
+                nativeEqMaxLevelMb = if (!dpOk) equalizerManager.maxLevelMb else 1500.toShort(),
+                nativeEqCenterFreqsHz = if (!dpOk) equalizerManager.centerFrequenciesHz else emptyList(),
+                hasDynamicsProcessing = dpOk,
+                dpChannelCount = if (dpOk) dynamicsProcessingManager.backendInfo.channelCount else 2,
                 hasPreEq = dpOk && dynamicsProcessingManager.backendInfo.preEqBandCount > 0,
-                preEqBandCount = dynamicsProcessingManager.backendInfo.preEqBandCount,
+                preEqBandCount = if (dpOk) dynamicsProcessingManager.backendInfo.preEqBandCount else 0,
                 hasMbc = dpOk && dynamicsProcessingManager.backendInfo.mbcBandCount > 0,
-                mbcBandCount = dynamicsProcessingManager.backendInfo.mbcBandCount,
+                mbcBandCount = if (dpOk) dynamicsProcessingManager.backendInfo.mbcBandCount else 0,
                 hasPostEq = dpOk && dynamicsProcessingManager.backendInfo.postEqBandCount > 0,
-                postEqBandCount = dynamicsProcessingManager.backendInfo.postEqBandCount,
+                postEqBandCount = if (dpOk) dynamicsProcessingManager.backendInfo.postEqBandCount else 0,
                 hasLimiter = dpOk,
                 hasBassBoost = bassBoostManager.isAvailable,
                 isBassBoostStrengthSupported = bassBoostManager.isStrengthSupported,
@@ -163,8 +170,8 @@ class DspEngine(
             _state.value = DspState.Active(
                 sessionId = GLOBAL_SESSION_ID,
                 effectCount = effectCount,
-                nativeEqBands = dynamicsProcessingManager.backendInfo.preEqBandCount,
-                dynamicsProcessingActive = true
+                nativeEqBands = if (dpOk) dynamicsProcessingManager.backendInfo.preEqBandCount else equalizerManager.numberOfBands.toInt(),
+                dynamicsProcessingActive = dpOk
             )
         } catch (e: Throwable) {
             Log.e(TAG, "Fallo al iniciar DSP", e)
@@ -184,10 +191,13 @@ class DspEngine(
         val headroomDb = HeadroomManager.calculateRequiredHeadroomDb(config)
         val autoGainDb = autoGainManager.calculateEffectiveGain(config, headroomDb)
 
-        // Toda la cadena principal (EQ32, Tone, MDRC, AutoGain, Limiter,
-        // Master Gain y Balance) se aplica exclusivamente dentro de DP.
+        // DynamicsProcessing es el backend principal. Si no está disponible,
+        // el EQ nativo sigue recibiendo la configuración para mantener una ruta
+        // de procesamiento real en vez de dejar la interfaz sin efecto audible.
         if (usingDynamicsProcessing) {
             dynamicsProcessingManager.applyConfig(config, headroomDb, autoGainDb)
+        } else {
+            equalizerManager.applyConfig(config)
         }
 
         bassBoostManager.applyConfig(config)
@@ -196,9 +206,8 @@ class DspEngine(
 
     private fun checkHardwareLiveness(): Boolean {
         if (!isInitialized || !_config.value.dspEnabled) return true
-        return usingDynamicsProcessing &&
-            activeSessionId == GLOBAL_SESSION_ID &&
-            dynamicsProcessingManager.isAlive()
+        return activeSessionId == GLOBAL_SESSION_ID &&
+            if (usingDynamicsProcessing) dynamicsProcessingManager.isAlive() else equalizerManager.isAvailable
     }
 
     fun recover(reason: String) {
@@ -226,6 +235,7 @@ class DspEngine(
     private fun releaseInternal() {
         watchdog.stop()
         dynamicsProcessingManager.release()
+        equalizerManager.release()
         bassBoostManager.release()
         virtualizerManager.release()
         audioMeterManager.release()
