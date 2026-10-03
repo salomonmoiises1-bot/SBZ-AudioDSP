@@ -19,7 +19,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sb.dsp.CapabilityAdapter
-import com.sb.dsp.EqMode
 import com.sb.ui.MainViewModel
 import com.sb.ui.theme.*
 
@@ -31,7 +30,7 @@ fun EqualizerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val frequencies = config.activeEqFrequencies()
     val gains = config.activeEqGains()
 
-    val auditDescription = CapabilityAdapter.getMappingAuditDescription(config.eqMode, capabilities)
+    val auditDescription = CapabilityAdapter.getMappingAuditDescription(capabilities)
 
     Column(
         modifier = modifier
@@ -53,7 +52,7 @@ fun EqualizerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     color = AccentCyan
                 )
                 Text(
-                    text = "Selección de densidad espectral",
+                    text = "Ecualizador EQ32 · 32 bandas",
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -70,29 +69,7 @@ fun EqualizerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // PESTAÑAS SELECTORAS EQ10 / EQ20 / EQ32
-        TabRow(
-            selectedTabIndex = config.eqMode.ordinal,
-            containerColor = SurfaceDark,
-            contentColor = AccentCyan
-        ) {
-            EqMode.values().forEach { mode ->
-                Tab(
-                    selected = config.eqMode == mode,
-                    onClick = { viewModel.setEqMode(mode) },
-                    text = {
-                        Text(
-                            text = when (mode) {
-                                EqMode.EQ10 -> "10 Bandas"
-                                EqMode.EQ20 -> "20 Bandas"
-                                EqMode.EQ32 -> "32 Bandas"
-                            },
-                            fontWeight = if (config.eqMode == mode) FontWeight.Bold else FontWeight.Normal
-                        )
-                    }
-                )
-            }
-        }
+        // EQ32 fijo: 32 bandas reales aplicadas 1:1 al Post-EQ de DynamicsProcessing.
 
         Spacer(modifier = Modifier.height(12.dp))
 
