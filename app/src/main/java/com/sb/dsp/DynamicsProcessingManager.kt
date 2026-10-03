@@ -57,7 +57,7 @@ class DynamicsProcessingManager {
                 2, // Canales estéreo
                 true, PRE_EQ_BAND_COUNT, // Pre-EQ habilitado
                 true, MBC_BAND_COUNT,    // MBC habilitado (4 bandas MDRC)
-                true, initialConfig.activeEqFrequencies().size, // Post-EQ gráfico de SB: 10/20/32 bandas según modo
+                true, initialConfig.activeEqFrequencies().size, // Post-EQ gráfico EQ32: 32 bandas reales
                 true                     // Limiter habilitado
             )
 

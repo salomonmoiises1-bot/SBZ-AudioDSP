@@ -149,9 +149,11 @@ class DspEngine(
                         hasDynamicsProcessing = dpOk,
                         dpChannelCount = 2,
                         hasPreEq = dpOk,
-                        preEqBandCount = DynamicsProcessingManager.PRE_EQ_BAND_COUNT,
+                        preEqBandCount = if (dpOk) DynamicsProcessingManager.PRE_EQ_BAND_COUNT else 0,
                         hasMbc = dpOk,
-                        mbcBandCount = DynamicsProcessingManager.MBC_BAND_COUNT,
+                        mbcBandCount = if (dpOk) DynamicsProcessingManager.MBC_BAND_COUNT else 0,
+                        hasPostEq = dpOk,
+                        postEqBandCount = if (dpOk) DspConfig.FREQUENCIES_EQ32.size else 0,
                         hasLimiter = dpOk,
                         hasBassBoost = bbOk,
                         isBassBoostStrengthSupported = bassBoostManager.isStrengthSupported,
@@ -162,7 +164,7 @@ class DspEngine(
 
                     isInitialized = true
 
-                    // 3. Aplicar configuración actual al pipeline PCM y a los managers
+                    // 3. Aplicar la configuración actual a los managers DSP
                     applyConfigInternal(_config.value)
 
                     // 4. Iniciar Watchdog

@@ -62,7 +62,7 @@ data class DspConfig(
     val toneTreble: Float = 0f,  // -12dB a +12dB
 
     // EQ Modo y Ganancias independientes
-    val eqMode: EqMode = EqMode.EQ10,
+    val eqMode: EqMode = EqMode.EQ32,
     val eq10Gains: List<Float> = List(10) { 0f },
     val eq20Gains: List<Float> = List(20) { 0f },
     val eq32Gains: List<Float> = List(32) { 0f },
@@ -175,6 +175,7 @@ data class DspConfig(
         val safeBalance = if (balance.isNaN() || balance.isInfinite()) 0f else balance.coerceIn(-1.0f, 1.0f)
 
         return copy(
+            eqMode = EqMode.EQ32,
             preGain = safePreGain,
             bassBoostStrength = safeBassStrength,
             toneBass = safeToneBass,
@@ -205,18 +206,12 @@ data class DspConfig(
     /**
      * Devuelve las ganancias del modo EQ activo actualmente.
      */
-    fun activeEqGains(): List<Float> = when (eqMode) {
-        EqMode.EQ10 -> eq10Gains
-        EqMode.EQ20 -> eq20Gains
-        EqMode.EQ32 -> eq32Gains
-    }
+    fun activeEqGains(): List<Float> = eq32Gains
 
     /**
-     * Devuelve las frecuencias del modo EQ activo actualmente.
+     * El backend de SB usa siempre el banco EQ32 de 32 bandas reales.
+     * Los campos EQ10/EQ20 se conservan únicamente para compatibilidad con
+     * configuraciones antiguas almacenadas, pero nunca participan del DSP.
      */
-    fun activeEqFrequencies(): List<Float> = when (eqMode) {
-        EqMode.EQ10 -> FREQUENCIES_EQ10
-        EqMode.EQ20 -> FREQUENCIES_EQ20
-        EqMode.EQ32 -> FREQUENCIES_EQ32
-    }
+    fun activeEqFrequencies(): List<Float> = FREQUENCIES_EQ32
 }

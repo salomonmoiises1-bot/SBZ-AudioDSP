@@ -4,8 +4,10 @@ import android.media.audiofx.Equalizer
 import android.util.Log
 
 /**
- * EqualizerManager: Gestiona el ecualizador nativo del sistema Android (android.media.audiofx.Equalizer).
- * Detecta las capacidades físicas de bandas y rangos y realiza readback de los valores reales.
+ * Detecta el Equalizer nativo únicamente para diagnóstico de capacidades.
+ *
+ * El procesamiento del EQ de SB NO utiliza este efecto. El EQ activo es siempre
+ * el banco EQ32 de 32 bandas aplicado 1:1 al Post-EQ de DynamicsProcessing.
  */
 class EqualizerManager {
     companion object {
@@ -28,66 +30,26 @@ class EqualizerManager {
         release()
         return try {
             val eq = Equalizer(priority, audioSessionId)
-            val bands = eq.numberOfBands
+            numberOfBands = eq.numberOfBands
             val range = eq.bandLevelRange
             minLevelMb = range[0]
             maxLevelMb = range[1]
-            numberOfBands = bands
-
-            val freqs = mutableListOf<Int>()
-            for (i in 0 until bands) {
-                // centerFreq se devuelve en milithercios (mHz) -> dividir entre 1000 para Hz
-                freqs.add(eq.getCenterFreq(i.toShort()) / 1000)
+            centerFrequenciesHz = buildList {
+                for (i in 0 until numberOfBands.toInt()) {
+                    add(eq.getCenterFreq(i.toShort()) / 1000)
+                }
             }
-            centerFrequenciesHz = freqs
             equalizer = eq
+            // Disabled: capability inspection only; never becomes the SB EQ backend.
+            eq.enabled = false
             isAvailable = true
-
-            Log.d(TAG, "Equalizer nativo inicializado: $bands bandas, rango: [${minLevelMb}mB, ${maxLevelMb}mB], freqs: $centerFrequenciesHz")
+            Log.d(TAG, "Equalizer nativo detectado para diagnóstico: $numberOfBands bandas, freqs=$centerFrequenciesHz")
             true
         } catch (e: Exception) {
             Log.w(TAG, "Equalizer nativo no disponible en sesión $audioSessionId: ${e.message}")
             isAvailable = false
             equalizer = null
             false
-        }
-    }
-
-    /**
-     * Aplica las ganancias lógicas adaptadas a las bandas físicas.
-     */
-    fun applyConfig(config: DspConfig) {
-        val eq = equalizer ?: return
-        if (!isAvailable) return
-
-        try {
-            if (eq.enabled != config.dspEnabled) {
-                eq.enabled = config.dspEnabled
-            }
-
-            if (!config.dspEnabled || numberOfBands <= 0) return
-
-            // Mapear ganancias lógicas según el modo activo
-            val logicalFreqs = config.activeEqFrequencies()
-            val logicalGains = config.activeEqGains()
-
-            val mappedLevelsMb = CapabilityAdapter.mapLogicalEqToNativeBands(
-                logicalFreqs = logicalFreqs,
-                logicalGains = logicalGains,
-                nativeFreqsHz = centerFrequenciesHz,
-                minLevelMb = minLevelMb,
-                maxLevelMb = maxLevelMb
-            )
-
-            for (i in mappedLevelsMb.indices) {
-                eq.setBandLevel(i.toShort(), mappedLevelsMb[i])
-            }
-
-            // Readback verification
-            val actualLevel0 = eq.getBandLevel(0.toShort())
-            Log.v(TAG, "Equalizer readback band 0: $actualLevel0 mB")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error aplicando Equalizer: ${e.message}", e)
         }
     }
 
