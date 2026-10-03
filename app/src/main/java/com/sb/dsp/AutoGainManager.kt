@@ -26,7 +26,8 @@ class AutoGainManager {
             return 0f
         }
 
-        // Estimación del offset medio introducido por el EQ y pre-gain
+        // Fallback cuando no hay medición válida del Visualizer:
+        // estimación del offset medio introducido por el EQ y pre-gain
         val avgEqGain = if (config.activeEqGains().isNotEmpty()) {
             config.activeEqGains().average().toFloat()
         } else {
@@ -36,7 +37,7 @@ class AutoGainManager {
         val netInputGain = config.preGain + (avgEqGain * 0.5f)
         // Usa medición real del Visualizer cuando está disponible; conserva el cálculo anterior como fallback.
         val targetDelta = if (measuredRmsDb > -95f) {
-            (-14f - measuredRmsDb).coerceIn(-12f, 6f)
+            (config.autoGainTarget - measuredRmsDb).coerceIn(-12f, 6f)
         } else {
             -netInputGain
         }

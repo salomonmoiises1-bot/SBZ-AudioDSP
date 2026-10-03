@@ -47,7 +47,7 @@ class VisualizerManager {
                         samplingRate: Int
                     ) = Unit
                 },
-                CAPTURE_RATE_HZ * 1000,
+                (CAPTURE_RATE_HZ * 1000).coerceAtMost(Visualizer.getMaxCaptureRate()),
                 true,
                 false
             )

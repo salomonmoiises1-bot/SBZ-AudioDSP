@@ -38,6 +38,7 @@ class DynamicsProcessingManager {
     private var appliedCutoffs = floatArrayOf(160f, 800f, 4000f, 20000f)
     private var appliedEqMode: EqMode? = null
 
+    @Synchronized
     fun initialize(audioSessionId: Int, priority: Int = 1000, initialConfig: DspConfig = DspConfig.DEFAULT): Boolean {
         softwareMdrc.updateConfig(initialConfig)
 
@@ -139,8 +140,50 @@ class DynamicsProcessingManager {
     }
 
     /**
+     * Actualiza exclusivamente la ganancia realtime usada por AutoGain.
+     *
+     * No reconstruye DynamicsProcessing, no modifica EQ/MDRC/Limiter y no cambia
+     * parámetros estructurales. Se usa con la medición continua del Visualizer.
+     */
+    @Synchronized
+    fun applyRealtimeGain(
+        config: DspConfig,
+        autoHeadroomDb: Float,
+        autoGainDb: Float
+    ) {
+        val dp = dynamicsProcessing ?: return
+        if (!isAvailable || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        if (!config.dspEnabled) return
+
+        try {
+            val netPreGain = config.preGain + autoHeadroomDb + autoGainDb
+            for (ch in 0..1) {
+                dp.setPreEqBandByChannelIndex(
+                    ch, 0,
+                    DynamicsProcessing.EqBand(true, 100f, netPreGain + config.toneBass)
+                )
+                dp.setPreEqBandByChannelIndex(
+                    ch, 1,
+                    DynamicsProcessing.EqBand(true, 1000f, netPreGain + config.toneMid)
+                )
+                dp.setPreEqBandByChannelIndex(
+                    ch, 2,
+                    DynamicsProcessing.EqBand(true, 10000f, netPreGain + config.toneTreble)
+                )
+                dp.setPreEqBandByChannelIndex(
+                    ch, 3,
+                    DynamicsProcessing.EqBand(true, 500f, netPreGain)
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error actualizando AutoGain realtime: ${e.message}")
+        }
+    }
+
+    /**
      * Aplica la configuración distinguiendo entre parámetros realtime y estructurales.
      */
+    @Synchronized
     fun applyConfig(config: DspConfig, autoHeadroomDb: Float = 0f, autoGainDb: Float = 0f) {
         // Actualizar siempre el motor de software para garantizar consistencia y cálculo de reducción
         softwareMdrc.updateConfig(config)
@@ -258,6 +301,7 @@ class DynamicsProcessingManager {
      */
     fun getGainReductionDb(): FloatArray = softwareMdrc.getGainReductionDb()
 
+    @Synchronized
     fun release() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

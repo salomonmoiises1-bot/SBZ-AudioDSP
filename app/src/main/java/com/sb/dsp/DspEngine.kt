@@ -88,6 +88,35 @@ class DspEngine(
                 }
             }
         }
+
+        // Lazo continuo de AutoGain: usa la medición real del Visualizer y actualiza
+        // únicamente la ganancia realtime del pre-EQ, sin reconstruir DynamicsProcessing.
+        externalScope.launch {
+            while (isActive) {
+                delay(33L)
+                if (!isInitialized) continue
+
+                val cfg = _config.value
+                if (!cfg.dspEnabled || !cfg.autoGainEnabled) {
+                    autoGainManager.reset()
+                    continue
+                }
+
+                val headroomDb = HeadroomManager.calculateRequiredHeadroomDb(cfg)
+                val measuredRmsDb = visualizerManager.currentRmsDb
+                val autoGainDb = autoGainManager.calculateEffectiveGain(
+                    cfg,
+                    headroomDb,
+                    measuredRmsDb
+                )
+
+                dynamicsProcessingManager.applyRealtimeGain(
+                    cfg,
+                    autoHeadroomDb = headroomDb,
+                    autoGainDb = autoGainDb
+                )
+            }
+        }
     }
 
     /**
