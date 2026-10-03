@@ -57,6 +57,7 @@ data class DspCapabilities(
      */
     val effectiveHardwareEqBands: Int
         get() = when {
+            hasDynamicsProcessing && preEqBandCount > 0 -> preEqBandCount
             hasDynamicsProcessing && postEqBandCount > 0 -> postEqBandCount
             hasEqualizer -> nativeEqBands
             else -> 0

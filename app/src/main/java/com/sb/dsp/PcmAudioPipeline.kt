@@ -3,9 +3,11 @@ package com.sb.dsp
 import kotlin.math.*
 
 /**
- * PcmAudioPipeline: Cadena completa de procesamiento DSP sobre muestras PCM estéreo en tiempo real.
+ * PcmAudioPipeline: cadena DSP sobre PCM estéreo cuando un consumidor directo
+ * proporciona las muestras al motor. No está conectada al audio de otras apps;
+ * la ruta global usa AudioEffect/DynamicsProcessing.
  *
- * Sigue estrictamente el orden acústico definido por la arquitectura de SB:
+ * Orden lógico de la cadena PCM directa:
  * 1. Pre-Gain (-20 dB a +20 dB)
  * 2. Bass Boost (Filtro shelving subgrave de bajo retardo)
  * 3. Tone (3 Vías: Bass @ 100 Hz, Mid @ 1 kHz, Treble @ 10 kHz)

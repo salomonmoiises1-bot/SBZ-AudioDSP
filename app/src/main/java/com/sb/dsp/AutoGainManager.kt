@@ -1,53 +1,43 @@
 package com.sb.dsp
 
-import kotlin.math.abs
-
 /**
- * AutoGainManager: Normalización y compensación automática de ganancia (AGC/Auto-Gain).
+ * AutoGain basado en una medición RMS real del mix global.
  *
- * Mantiene el nivel de volumen percibido objetivo, coordinándose con Auto Headroom
- * para evitar el efecto "pumping" (bombeo de volumen).
+ * Visualizer entrega RMS en mB/dBFS; no se inventa un nivel a partir de la suma
+ * de ganancias del EQ. La corrección se limita y se suaviza para evitar pumping.
  */
 class AutoGainManager {
-    private var currentCompensatedGainDb = 0f
-    private val smoothingFactor = 0.05f // Filtro pasa-bajos para cambios suaves
+    private var currentGainDb = 0f
+    private var measuredRmsDb: Float? = null
+    private val smoothingFactor = 0.08f
 
-    /**
-     * Calcula la ganancia makeup en dB para alcanzar el objetivo configurado.
-     * Garantiza que la ganancia makeup nunca supere el límite seguro de +12 dB.
-     */
+    fun updateMeasuredRms(rmsDb: Float?) {
+        if (rmsDb == null || !rmsDb.isFinite()) return
+        measuredRmsDb = rmsDb
+    }
+
     fun calculateEffectiveGain(
         config: DspConfig,
         autoHeadroomDb: Float
     ): Float {
         if (!config.autoGainEnabled) {
-            currentCompensatedGainDb = 0f
+            currentGainDb = 0f
             return 0f
         }
 
-        // Estimación del offset medio introducido por el EQ y pre-gain
-        val avgEqGain = if (config.activeEqGains().isNotEmpty()) {
-            config.activeEqGains().average().toFloat()
-        } else {
-            0f
-        }
+        val rms = measuredRmsDb
+        if (rms == null) return currentGainDb
 
-        val netInputGain = config.preGain + (avgEqGain * 0.5f)
-        // Ganancia requerida para llevar la señal al objetivo relativo (ej. -14 LUFS)
-        val targetDelta = -netInputGain
-
-        // Limitar la ganancia makeup entre -12 dB y +6 dB
-        val clampedTarget = targetDelta.coerceIn(-12f, 6f)
-
-        // Suavizado temporal exponencial para evitar saltos o bombeos acústicos
-        currentCompensatedGainDb += (clampedTarget - currentCompensatedGainDb) * smoothingFactor
-
-        // Si autoHeadroom está reduciendo, compensamos solo hasta el 50% de la reducción para no anular la protección
-        val safeHeadroomCompensation = abs(autoHeadroomDb) * 0.3f
-        return (currentCompensatedGainDb + safeHeadroomCompensation).coerceIn(-12f, 6f)
+        val errorDb = (config.autoGainTarget - rms).coerceIn(-12f, 6f)
+        // Never let AutoGain cancel the complete protective headroom.
+        val safeTarget = (errorDb + autoHeadroomDb.coerceAtMost(0f) * 0.25f)
+            .coerceIn(-12f, 6f)
+        currentGainDb += (safeTarget - currentGainDb) * smoothingFactor
+        return currentGainDb.coerceIn(-12f, 6f)
     }
 
     fun reset() {
-        currentCompensatedGainDb = 0f
+        currentGainDb = 0f
+        measuredRmsDb = null
     }
 }
