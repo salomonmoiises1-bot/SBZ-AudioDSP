@@ -19,11 +19,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.sbznext.audio.DspRuntime
 import com.sbznext.audio.PlaybackDspService
-import com.sbznext.data.DspStore
 import com.sbznext.data.DspPresets
 import com.sbznext.dsp.DspConfig
 
 class MainActivity:ComponentActivity(){
+    private var serviceRunning by mutableStateOf(false)
     private val mic=registerForActivityResult(ActivityResultContracts.RequestPermission()){ requestNotifications() }
     private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){}
     private val projection=registerForActivityResult(ActivityResultContracts.StartActivityForResult()){r->
@@ -32,8 +32,16 @@ class MainActivity:ComponentActivity(){
                 .putExtra(PlaybackDspService.EXTRA_RESULT_CODE,r.resultCode)
                 .putExtra(PlaybackDspService.EXTRA_DATA,r.data)
             startForegroundService(i)
+            serviceRunning=true
+        } else {
+            serviceRunning=false
         }
     }
+    override fun onStop(){
+        DspRuntime.save(this)
+        super.onStop()
+    }
+
     override fun onCreate(state:Bundle?){
         super.onCreate(state)
         DspRuntime.configure(this)
@@ -50,8 +58,8 @@ class MainActivity:ComponentActivity(){
 
     @Composable private fun SbzApp(){
         var c by remember{mutableStateOf(DspRuntime.config())}
-        var running by remember{mutableStateOf(false)}
-        fun update(n:DspConfig){c=n;DspRuntime.update(this@MainActivity,n)}
+        val running=serviceRunning
+        fun update(n:DspConfig){c=n;DspRuntime.update(n)}
 
         MaterialTheme(colorScheme=darkColorScheme()){
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)){
@@ -61,12 +69,11 @@ class MainActivity:ComponentActivity(){
                 Row(verticalAlignment=Alignment.CenterVertically){
                     Button(onClick={
                         projection.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
-                        running=true
                     }){Text("Iniciar DSP")}
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick={
                         stopService(Intent(this@MainActivity,PlaybackDspService::class.java))
-                        running=false
+                        serviceRunning=false
                     }){Text("Detener")}
                     Spacer(Modifier.width(12.dp))
                     Text(if(running)"ACTIVO" else "DETENIDO")
@@ -118,11 +125,20 @@ class MainActivity:ComponentActivity(){
                 }
                 c.mdrcBands.forEachIndexed{idx,b->
                     Text("Banda ${idx+1}",style=MaterialTheme.typography.titleMedium)
-                    Control("Threshold",b.thresholdDb,-48f,0f){v->
+                    Control("Threshold",b.thresholdDb,-60f,0f){v->
                         val a=c.mdrcBands.copyOf();a[idx]=b.copy(thresholdDb=v);update(c.copy(mdrcBands=a))
                     }
-                    Control("Ratio",b.ratio,1f,8f){v->
+                    Control("Ratio",b.ratio,1f,20f){v->
                         val a=c.mdrcBands.copyOf();a[idx]=b.copy(ratio=v);update(c.copy(mdrcBands=a))
+                    }
+                    Control("Attack",b.attackMs,0.5f,100f){v->
+                        val a=c.mdrcBands.copyOf();a[idx]=b.copy(attackMs=v);update(c.copy(mdrcBands=a))
+                    }
+                    Control("Release",b.releaseMs,1f,500f){v->
+                        val a=c.mdrcBands.copyOf();a[idx]=b.copy(releaseMs=v);update(c.copy(mdrcBands=a))
+                    }
+                    Control("Makeup",b.makeupDb,-12f,12f){v->
+                        val a=c.mdrcBands.copyOf();a[idx]=b.copy(makeupDb=v);update(c.copy(mdrcBands=a))
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -146,7 +162,7 @@ class MainActivity:ComponentActivity(){
                     Spacer(Modifier.width(8.dp))
                     Button(onClick={val n=DspPresets.smooth();update(n)}){Text("Smooth")}
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick={DspStore.save(this@MainActivity,c)}){Text("Guardar")}
+                    OutlinedButton(onClick={DspRuntime.save(this@MainActivity)}){Text("Guardar")}
                 }
                 Spacer(Modifier.height(24.dp))
                 Text("Importante: AudioPlaybackCapture procesa una copia autorizada del audio de otras apps; Android no expone una API pública para sustituir silenciosamente su salida original.",style=MaterialTheme.typography.bodySmall)
