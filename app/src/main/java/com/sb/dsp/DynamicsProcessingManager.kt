@@ -20,7 +20,7 @@ import kotlin.math.abs
  * La estructura de DynamicsProcessing (número de bandas/etapas) se crea una sola
  * vez. Los parámetros de ganancia, MBC y limiter se actualizan en tiempo real.
  * Los cambios rápidos del EQ se coalescen y se escriben con una cadencia mínima,
- * siguiendo el enfoque usado por Equalizer314 para evitar stutter durante el drag.
+ * siguiendo un enfoque de actualización optimizada para evitar stutter durante el drag.
  */
 class DynamicsProcessingManager {
     companion object {

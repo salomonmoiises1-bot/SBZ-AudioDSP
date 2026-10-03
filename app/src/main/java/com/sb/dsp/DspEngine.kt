@@ -89,7 +89,7 @@ class DspEngine(
 
     /**
      * Inicia SIEMPRE el backend global de SB. El proyecto no ofrece un modo de
-     * sesión privada: el objetivo es el mismo camino system-wide de Equalizer314.
+     * sesión privada: el objetivo es utilizar el camino de procesamiento system-wide.
      */
     fun start(@Suppress("UNUSED_PARAMETER") sessionId: Int = GLOBAL_SESSION_ID) {
         externalScope.launch {
