@@ -1,13 +1,8 @@
 package com.sbznext
-import android.Manifest
-import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -24,19 +19,6 @@ import com.sbznext.dsp.DspConfig
 
 class MainActivity:ComponentActivity(){
     private var serviceRunning by mutableStateOf(false)
-    private val mic=registerForActivityResult(ActivityResultContracts.RequestPermission()){ requestNotifications() }
-    private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){}
-    private val projection=registerForActivityResult(ActivityResultContracts.StartActivityForResult()){r->
-        if(r.resultCode==Activity.RESULT_OK && r.data!=null){
-            val i=Intent(this,PlaybackDspService::class.java)
-                .putExtra(PlaybackDspService.EXTRA_RESULT_CODE,r.resultCode)
-                .putExtra(PlaybackDspService.EXTRA_DATA,r.data)
-            startForegroundService(i)
-            serviceRunning=true
-        } else {
-            serviceRunning=false
-        }
-    }
     override fun onStop(){
         DspRuntime.save(this)
         super.onStop()
@@ -45,15 +27,7 @@ class MainActivity:ComponentActivity(){
     override fun onCreate(state:Bundle?){
         super.onCreate(state)
         DspRuntime.configure(this)
-        if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)
-            mic.launch(Manifest.permission.RECORD_AUDIO)
-        else requestNotifications()
         setContent{SbzApp()}
-    }
-    private fun requestNotifications(){
-        if(android.os.Build.VERSION.SDK_INT>=33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
-            notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     @Composable private fun SbzApp(){
@@ -64,11 +38,12 @@ class MainActivity:ComponentActivity(){
         MaterialTheme(colorScheme=darkColorScheme()){
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)){
                 Text("sBz Next",style=MaterialTheme.typography.headlineMedium)
-                Text("Motor DSP PCM · 32 bandas Constant-Q",style=MaterialTheme.typography.bodyMedium)
+                Text("DSP global · EQ32 lógico · DynamicsProcessing",style=MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(16.dp))
                 Row(verticalAlignment=Alignment.CenterVertically){
                     Button(onClick={
-                        projection.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+                        startForegroundService(Intent(this@MainActivity, PlaybackDspService::class.java))
+                        serviceRunning=true
                     }){Text("Iniciar DSP")}
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(onClick={
@@ -165,7 +140,7 @@ class MainActivity:ComponentActivity(){
                     OutlinedButton(onClick={DspRuntime.save(this@MainActivity)}){Text("Guardar")}
                 }
                 Spacer(Modifier.height(24.dp))
-                Text("Importante: AudioPlaybackCapture procesa una copia autorizada del audio de otras apps; Android no expone una API pública para sustituir silenciosamente su salida original.",style=MaterialTheme.typography.bodySmall)
+                Text("Modo global: el DSP se conecta a la salida de audio de Android mediante DynamicsProcessing, sin duplicar el audio con AudioRecord/AudioTrack.",style=MaterialTheme.typography.bodySmall)
             }
         }
     }
