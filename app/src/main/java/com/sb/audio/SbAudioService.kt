@@ -17,6 +17,7 @@ import com.sb.dsp.DspEngine
 import com.sb.dsp.DspState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 
 /**
  * SbAudioService: Servicio en primer plano persistente para mantener el motor DSP
@@ -53,9 +54,10 @@ class SbAudioService : Service() {
     }
 
     private val binder = LocalBinder()
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private lateinit var dspEngine: DspEngine
     private lateinit var sessionManager: AudioSessionManager
+    private lateinit var startupReady: CompletableDeferred<Unit>
 
     inner class LocalBinder : Binder() {
         fun getService(): SbAudioService = this@SbAudioService
@@ -70,6 +72,7 @@ class SbAudioService : Service() {
         val app = application as SbApplication
         dspEngine = app.dspEngine
         sessionManager = AudioSessionManager(this)
+        startupReady = CompletableDeferred()
 
         createNotificationChannel()
 
@@ -102,19 +105,31 @@ class SbAudioService : Service() {
             }
         }
 
-        // SB usa siempre el backend global de sesión 0. Las sesiones privadas
-        // observadas por el receiver son sólo información de diagnóstico.
-        dspEngine.start(AudioSessionManager.GLOBAL_SESSION_ID)
+        // Primero restaura la configuración persistida y recién después crea
+        // los efectos. Así el backend nunca arranca un instante con DEFAULT y
+        // luego cambia bruscamente al preset/configuración guardada.
+        serviceScope.launch(Dispatchers.Default) {
+            try {
+                val savedConfig = app.presetRepository.activeConfigFlow.first()
+                dspEngine.updateConfig(savedConfig)
+            } catch (e: Throwable) {
+                Log.w(TAG, "No se pudo restaurar configuración persistida: ${e.message}")
+            } finally {
+                dspEngine.start(AudioSessionManager.GLOBAL_SESSION_ID)
+                startupReady.complete(Unit)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_TOGGLE_DSP -> {
-                val currentConfig = dspEngine.config.value
-                val newConfig = currentConfig.copy(dspEnabled = !currentConfig.dspEnabled)
-                dspEngine.updateConfig(newConfig)
                 val app = application as SbApplication
                 serviceScope.launch {
+                    startupReady.await()
+                    val currentConfig = dspEngine.config.value
+                    val newConfig = currentConfig.copy(dspEnabled = !currentConfig.dspEnabled).validate()
+                    dspEngine.updateConfig(newConfig)
                     app.presetRepository.saveActiveConfig(newConfig)
                 }
             }
@@ -126,8 +141,11 @@ class SbAudioService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_START -> {
-                if (dspEngine.state.value == DspState.Off) {
-                    dspEngine.start(sessionManager.currentTargetSession.value)
+                serviceScope.launch {
+                    startupReady.await()
+                    if (dspEngine.state.value == DspState.Off) {
+                        dspEngine.start(AudioSessionManager.GLOBAL_SESSION_ID)
+                    }
                 }
             }
         }
