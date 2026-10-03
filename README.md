@@ -1,37 +1,45 @@
 # sBz Next 1.0
 
-Proyecto Android nativo Kotlin/Compose con un motor DSP PCM propio.
+Proyecto Android nativo Kotlin/Compose con arquitectura global basada en `DynamicsProcessing`, siguiendo el enfoque de Equalizer314.
 
-## Motor
+## Ruta de audio
 
-La ruta de audio es:
+La versión anterior usaba:
 
-`AudioPlaybackCapture -> AudioRecord Float PCM estéreo -> DspEngine -> AudioTrack Float PCM estéreo`
+`AudioPlaybackCapture -> AudioRecord -> DspEngine -> AudioTrack`
 
-El `DspEngine` procesa el mismo buffer PCM y contiene:
+Eso procesaba una copia del audio mientras la aplicación original seguía enviando el audio al mezclador de Android, por lo que podía aparecer eco/duplicación.
+
+La versión actual elimina por completo `MediaProjection`, `AudioRecord` y `AudioTrack` de la ruta DSP. El servicio conecta `DynamicsProcessing` a la salida global de Android mediante la sesión 0. El audio original sigue teniendo una sola ruta dentro del mezclador y el DSP se inserta en esa infraestructura.
+
+## Cadena sBz
+
+La configuración mantiene:
 
 1. Pre-Gain
 2. Bass Boost + Tone
-3. EQ32 Constant-Q, 32 Biquads
-4. MDRC de 4 bandas con crossovers configurables
-5. AutoGain / headroom
-6. Spatial / stereo width
+3. EQ32 lógico
+4. MDRC de 4 bandas
+5. Headroom
+6. Spatial / Stereo Width
 7. Balance
 8. Master Gain
-9. Limiter / anti-clipping
+9. Limiter
 
-Los parámetros se mantienen fuera del hilo de audio y se aplican al motor sin crear objetos dentro de `process()`.
+Los 32 puntos del EQ siguen existiendo en `DspConfig`. La cantidad de bandas físicas que Android puede procesar depende del DSP del dispositivo. En equipos con menos bandas, la curva de 32 puntos se interpola hacia las bandas nativas disponibles; no se simula una segunda ruta PCM.
 
-## Android playback capture
+## Igual que Equalizer314
 
-La captura de reproducción usa `MediaProjection` + `AudioPlaybackCaptureConfiguration` + `AudioRecord`. Android requiere permiso `RECORD_AUDIO` y consentimiento del usuario. Además, la aplicación que produce el audio puede impedir la captura.
+Equalizer314 utiliza `DynamicsProcessing` y `Visualizer` como infraestructura de audio, y su modo global utiliza la sesión 0. sBz Next toma `DynamicsProcessing` como base de integración, pero mantiene su propia configuración, presets y funciones. No se usa `AudioPlaybackCapture` para sustituir el mezclador.
 
-**Limitación de plataforma:** AudioPlaybackCapture copia el audio reproducido por otra aplicación; no reemplaza silenciosamente su salida original. Por ello este proyecto no afirma ser un reemplazo global del mezclador de Android.
+## Permisos
+
+La aplicación ya no solicita `RECORD_AUDIO` ni consentimiento de `MediaProjection`. Usa `MODIFY_AUDIO_SETTINGS`, servicio foreground de reproducción multimedia y notificaciones.
+
+## Limitación importante
+
+Android documenta que conectar efectos insert a la mezcla global mediante sesión 0 está deprecado, aunque es la infraestructura utilizada por aplicaciones de EQ global como Equalizer314. La disponibilidad y el número de bandas efectivos siguen dependiendo del firmware/OEM.
 
 ## Compilación
 
-GitHub Actions usa JDK 17 y Gradle 8.9 para `:app:assembleDebug`. El workflow publica `app-debug.apk` como artefacto.
-
-## Pruebas
-
-Hay pruebas unitarias para finitud del procesamiento, limitación de amplitud y respuesta del EQ.
+GitHub Actions usa JDK 17 y Gradle 8.9 para `:app:testDebugUnitTest` y `:app:assembleDebug`.
