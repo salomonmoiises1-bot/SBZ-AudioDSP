@@ -102,9 +102,13 @@ class SbAudioService : Service() {
             }
         }
 
-        // SB usa siempre el backend global de sesión 0. Las sesiones privadas
-        // observadas por el receiver son sólo información de diagnóstico.
-        dspEngine.start(AudioSessionManager.GLOBAL_SESSION_ID)
+        // Iniciar motor en sesión seleccionada
+        serviceScope.launch {
+            sessionManager.currentTargetSession.collectLatest { targetSession ->
+                Log.d(TAG, "Sesión objetivo cambiada a: $targetSession")
+                dspEngine.start(targetSession)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
