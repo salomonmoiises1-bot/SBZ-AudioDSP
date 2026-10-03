@@ -92,7 +92,7 @@ fun DiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Sesión 0 Global: ${if (capabilities.isSessionZeroSupported) "Soportada" else "Restringida / No nativa"}", color = TextSecondary)
                 Text("DynamicsProcessing (API 28+): ${if (capabilities.hasDynamicsProcessing) "SOPORTADO (${capabilities.mbcBandCount} bandas MBC, Limiter)" else "NO DISPONIBLE"}", color = if (capabilities.hasDynamicsProcessing) AccentGreen else AccentAmber)
-                Text("Ecualizador Nativo: ${if (capabilities.hasEqualizer) "${capabilities.nativeEqBands} bandas físicas (${capabilities.nativeEqMinLevelMb/100}dB a +${capabilities.nativeEqMaxLevelMb/100}dB)" else "No disponible"}", color = TextSecondary)
+                Text("DP Pre-EQ físico: ${if (capabilities.hasPreEq) "${capabilities.preEqBandCount} bandas" else "No disponible"}", color = TextSecondary)
                 Text("BassBoost: ${if (capabilities.hasBassBoost) "Disponible" else "No soportado"}", color = TextSecondary)
                 Text("Virtualizador: ${if (capabilities.hasVirtualizer) "Disponible" else "No soportado"}", color = TextSecondary)
             }
