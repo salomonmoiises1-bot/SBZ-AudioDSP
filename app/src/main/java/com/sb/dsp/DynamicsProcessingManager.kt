@@ -22,6 +22,7 @@ class DynamicsProcessingManager {
         private const val TAG = "SB_DynamicsProcessing"
         const val MBC_BAND_COUNT = 4
         const val PRE_EQ_BAND_COUNT = 4
+        const val MAX_POST_EQ_BAND_COUNT = 32
     }
 
     private var dynamicsProcessing: DynamicsProcessing? = null
@@ -35,6 +36,7 @@ class DynamicsProcessingManager {
 
     // Rastreo de crossovers actuales para evitar reconstrucciones innecesarias
     private var appliedCutoffs = floatArrayOf(160f, 800f, 4000f, 20000f)
+    private var appliedEqMode: EqMode? = null
 
     fun initialize(audioSessionId: Int, priority: Int = 1000, initialConfig: DspConfig = DspConfig.DEFAULT): Boolean {
         softwareMdrc.updateConfig(initialConfig)
@@ -54,7 +56,7 @@ class DynamicsProcessingManager {
                 2, // Canales estéreo
                 true, PRE_EQ_BAND_COUNT, // Pre-EQ habilitado
                 true, MBC_BAND_COUNT,    // MBC habilitado (4 bandas MDRC)
-                false, 0,                // Post-EQ
+                true, initialConfig.activeEqFrequencies().size, // Post-EQ gráfico de SB: 10/20/32 bandas según modo
                 true                     // Limiter habilitado
             )
 
@@ -67,6 +69,9 @@ class DynamicsProcessingManager {
                 initialConfig.mdrcCutoff4
             )
 
+            val eqFreqs = initialConfig.activeEqFrequencies()
+            val eqGains = initialConfig.activeEqGains()
+
             for (ch in 0..1) {
                 val preEq = DynamicsProcessing.Eq(
                     true,
@@ -77,6 +82,19 @@ class DynamicsProcessingManager {
                     preEq.setBand(b, DynamicsProcessing.EqBand(true, 100f, 0f))
                 }
                 builder.setPreEqByChannelIndex(ch, preEq)
+
+                val postEq = DynamicsProcessing.Eq(true, true, eqFreqs.size)
+                for (b in eqFreqs.indices) {
+                    postEq.setBand(
+                        b,
+                        DynamicsProcessing.EqBand(
+                            true,
+                            eqFreqs[b],
+                            eqGains[b]
+                        )
+                    )
+                }
+                builder.setPostEqByChannelIndex(ch, postEq)
 
                 val mbc = DynamicsProcessing.Mbc(
                     true,
@@ -108,8 +126,9 @@ class DynamicsProcessingManager {
             dynamicsProcessing = dp
             isAvailable = true
             appliedCutoffs = initialCutoffs
+            appliedEqMode = initialConfig.eqMode
 
-            Log.d(TAG, "DynamicsProcessing inicializado con éxito en sesión $audioSessionId con 4 bandas MDRC.")
+            Log.d(TAG, "DynamicsProcessing inicializado con 4 bandas MDRC + Post-EQ gráfico de ${eqFreqs.size} bandas.")
             true
         } catch (e: Exception) {
             Log.w(TAG, "Fallo al inicializar DynamicsProcessing en sesión $audioSessionId: ${e.message}. Activando respaldo MDRC por software.")
@@ -135,8 +154,9 @@ class DynamicsProcessingManager {
                     config.mdrcCutoff2 != appliedCutoffs[1] ||
                     config.mdrcCutoff3 != appliedCutoffs[2] ||
                     config.mdrcCutoff4 != appliedCutoffs[3]
+            val eqModeChanged = appliedEqMode != config.eqMode
 
-            if (cutoffsChanged) {
+            if (cutoffsChanged || eqModeChanged) {
                 Log.d(TAG, "Cambio de crossover estructural detectado. Reconstruyendo DynamicsProcessing...")
                 initialize(currentSessionId, initialConfig = config)
                 return applyConfig(config, autoHeadroomDb, autoGainDb)
@@ -169,7 +189,25 @@ class DynamicsProcessingManager {
                 dp.setPreEqBandByChannelIndex(ch, 3, b3)
             }
 
-            // 2. APLICAR MBC / MDRC (4 Bandas: Low, Low-Mid, High-Mid, High)
+            // 2. APLICAR EQ GRÁFICO EN POST-EQ DE DYNAMICSPROCESSING
+            // Las bandas lógicas de SB se aplican 1:1 al banco DP del mismo tamaño.
+            // No se usa android.media.audiofx.Equalizer ni se proyecta el EQ sobre sus bandas físicas.
+            val eqFreqs = config.activeEqFrequencies()
+            val eqGains = config.activeEqGains()
+            require(eqFreqs.size == eqGains.size && eqFreqs.size <= MAX_POST_EQ_BAND_COUNT) {
+                "Configuración EQ inválida: ${eqFreqs.size} bandas"
+            }
+            for (ch in 0..1) {
+                for (bIndex in eqFreqs.indices) {
+                    dp.setPostEqBandByChannelIndex(
+                        ch,
+                        bIndex,
+                        DynamicsProcessing.EqBand(true, eqFreqs[bIndex], eqGains[bIndex])
+                    )
+                }
+            }
+
+            // 3. APLICAR MBC / MDRC (4 Bandas: Low, Low-Mid, High-Mid, High)
             val bands = listOf(config.mdrcBand1, config.mdrcBand2, config.mdrcBand3, config.mdrcBand4)
             val cutoffs = listOf(config.mdrcCutoff1, config.mdrcCutoff2, config.mdrcCutoff3, config.mdrcCutoff4)
 
@@ -194,7 +232,7 @@ class DynamicsProcessingManager {
                 }
             }
 
-            // 3. APLICAR LIMITER
+            // 4. APLICAR LIMITER
             for (ch in 0..1) {
                 val limiter = DynamicsProcessing.Limiter(
                     config.limiterEnabled,

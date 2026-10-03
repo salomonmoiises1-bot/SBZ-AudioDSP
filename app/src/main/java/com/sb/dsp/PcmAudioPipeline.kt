@@ -24,7 +24,6 @@ class PcmAudioPipeline(
 ) {
     // Componentes DSP dedicados sobre PCM
     val mdrcProcessor = MdrcProcessor(sampleRate)
-    val eqProcessor = ConstantQGraphicEq(EqMode.EQ32, sampleRate)
     val toneManager = ToneManager()
 
     // Filtro shelving propio para Bass Boost PCM
@@ -45,7 +44,6 @@ class PcmAudioPipeline(
             sampleRate = newRate
             mdrcProcessor.sampleRate = newRate
             mdrcProcessor.recalculateCrossovers()
-            eqProcessor.updateSampleRate(newRate)
         }
     }
 
@@ -100,8 +98,7 @@ class PcmAudioPipeline(
         // 3. Tone
         toneManager.applyConfig(config)
 
-        // 4. EQ32
-        eqProcessor.updateConfig(config)
+        // 4. EQ32: el EQ gráfico se procesa exclusivamente por Post-EQ de DynamicsProcessing.
 
         // 5. MDRC
         mdrcProcessor.updateConfig(config)
@@ -146,10 +143,7 @@ class PcmAudioPipeline(
             sL = toneL
             sR = toneR
 
-            // 4. EQ32
-            val (eqL, eqR) = eqProcessor.processSample(sL, sR)
-            sL = eqL
-            sR = eqR
+            // 4. EQ32: procesado por Post-EQ de DynamicsProcessing.
 
             // 5. MDRC (4-Band Dynamic Range Compression sobre PCM)
             val (mdrcL, mdrcR) = mdrcProcessor.processSample(sL, sR)

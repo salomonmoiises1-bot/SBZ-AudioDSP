@@ -204,14 +204,13 @@ class DspEngine(
 
             // 3. Aplicar al pipeline PCM nativo (MDRC, EQ32, etc.)
             pcmPipeline.mdrcProcessor.updateConfig(config)
-            pcmPipeline.eqProcessor.updateConfig(config)
             pcmPipeline.toneManager.applyConfig(config)
 
             // 4. Aplicar a DynamicsProcessing HAL si está activo
             dynamicsProcessingManager.applyConfig(config, autoHeadroomDb = headroomDb, autoGainDb = autoGainDb)
 
-            // 5. Aplicar a Equalizer nativo
-            equalizerManager.applyConfig(config)
+            // 5. El EQ gráfico NO se aplica mediante android.media.audiofx.Equalizer.
+            // El backend de EQ es exclusivamente el Post-EQ de DynamicsProcessing.
 
             // 6. Aplicar Bass Boost nativo
             bassBoostManager.applyConfig(config)

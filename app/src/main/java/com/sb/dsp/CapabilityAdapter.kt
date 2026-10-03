@@ -96,25 +96,23 @@ object CapabilityAdapter {
     }
 
     /**
-     * Genera una descripción técnica transparente de cómo se aplica la configuración.
+     * Describe el backend real del EQ. No representa el EQ como un mapeo
+     * hacia las bandas físicas de android.media.audiofx.Equalizer.
      */
     fun getMappingAuditDescription(
         eqMode: EqMode,
         capabilities: DspCapabilities
     ): String {
-        val logicalCount = when (eqMode) {
+        val count = when (eqMode) {
             EqMode.EQ10 -> 10
             EqMode.EQ20 -> 20
             EqMode.EQ32 -> 32
         }
 
-        val hwBands = capabilities.effectiveHardwareEqBands
-        return if (hwBands == 0) {
-            "Aviso: Ningún ecualizador por hardware disponible en esta sesión."
-        } else if (hwBands >= logicalCount) {
-            "Mapeo 1:1 directo: Las $logicalCount bandas lógicas se procesan en $hwBands bandas físicas."
+        return if (capabilities.hasDynamicsProcessing) {
+            "EQ gráfico: $count bandas 1:1 en el Post-EQ de DynamicsProcessing."
         } else {
-            "Mapeo acústico adaptativo: $logicalCount bandas lógicas proyectadas logarítmicamente sobre $hwBands bandas físicas reales de Android."
+            "EQ gráfico: requiere DynamicsProcessing; no se proyecta sobre el Equalizer nativo."
         }
     }
 }
