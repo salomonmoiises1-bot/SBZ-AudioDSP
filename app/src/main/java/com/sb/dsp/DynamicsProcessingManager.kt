@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
+import kotlin.math.pow
 
 /**
  * Único backend principal de DSP para audio externo en Android.
@@ -253,7 +254,7 @@ class DynamicsProcessingManager {
         q: Float
     ): Float {
         if (abs(gainDb) < 0.0001f) return 0f
-        val a = kotlin.math.pow(10.0, gainDb / 40.0)
+        val a = 10.0.pow(gainDb / 40.0)
         val w0 = 2.0 * Math.PI * centerHz / 48000.0
         val w = 2.0 * Math.PI * frequencyHz.coerceAtLeast(1f) / 48000.0
         val alpha = kotlin.math.sin(w0) / (2.0 * q)
@@ -268,17 +269,17 @@ class DynamicsProcessingManager {
         val a2: Double
         if (lowShelf) {
             b0 = a * ((a + 1) - (a - 1) * cosW0 + beta)
-            b1 = 2 * a * ((a - 1) - (a + 1) * cosW0)
+            b1 = 2.0 * a * ((a - 1) - (a + 1) * cosW0)
             b2 = a * ((a + 1) - (a - 1) * cosW0 - beta)
             a0 = (a + 1) + (a - 1) * cosW0 + beta
-            a1 = -2 * ((a - 1) + (a + 1) * cosW0)
+            a1 = -2.0 * ((a - 1) + (a + 1) * cosW0)
             a2 = (a + 1) + (a - 1) * cosW0 - beta
         } else {
             b0 = a * ((a + 1) + (a - 1) * cosW0 + beta)
-            b1 = -2 * a * ((a - 1) + (a + 1) * cosW0)
+            b1 = -2.0 * a * ((a - 1) + (a + 1) * cosW0)
             b2 = a * ((a + 1) + (a - 1) * cosW0 - beta)
             a0 = (a + 1) - (a - 1) * cosW0 + beta
-            a1 = 2 * ((a - 1) - (a + 1) * cosW0)
+            a1 = 2.0 * ((a - 1) - (a + 1) * cosW0)
             a2 = (a + 1) - (a - 1) * cosW0 - beta
         }
         return biquadMagnitudeDb(b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0, w)
@@ -291,17 +292,17 @@ class DynamicsProcessingManager {
         q: Float
     ): Float {
         if (abs(gainDb) < 0.0001f) return 0f
-        val a = kotlin.math.pow(10.0, gainDb / 40.0)
+        val a = 10.0.pow(gainDb / 40.0)
         val wc = 2.0 * Math.PI * centerHz / 48000.0
         val w = 2.0 * Math.PI * frequencyHz.coerceAtLeast(1f) / 48000.0
         val alpha = kotlin.math.sin(wc) / (2.0 * q)
         val cosWc = kotlin.math.cos(wc)
-        val b0 = 1 + alpha * a
-        val b1 = -2 * cosWc
-        val b2 = 1 - alpha * a
-        val a0 = 1 + alpha / a
-        val a1 = -2 * cosWc
-        val a2 = 1 - alpha / a
+        val b0 = 1.0 + alpha * a
+        val b1 = -2.0 * cosWc
+        val b2 = 1.0 - alpha * a
+        val a0 = 1.0 + alpha / a
+        val a1 = -2.0 * cosWc
+        val a2 = 1.0 - alpha / a
         return biquadMagnitudeDb(b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0, w)
     }
 
