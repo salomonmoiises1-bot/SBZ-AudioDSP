@@ -97,41 +97,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         applyAndPersist(updated)
     }
 
-    fun setEqMode(mode: EqMode) {
-        val updated = dspConfig.value.copy(eqMode = mode)
+    fun setEqMode(@Suppress("UNUSED_PARAMETER") mode: EqMode) {
+        // Compatibilidad con llamadas antiguas: SB mantiene siempre EQ32.
+        val updated = dspConfig.value.copy(eqMode = EqMode.EQ32)
         applyAndPersist(updated)
     }
 
     fun setEqGain(bandIndex: Int, gainDb: Float) {
         val current = dspConfig.value
-        val updated = when (current.eqMode) {
-            EqMode.EQ10 -> {
-                val list = current.eq10Gains.toMutableList()
-                if (bandIndex in list.indices) list[bandIndex] = gainDb
-                current.copy(eq10Gains = list)
-            }
-            EqMode.EQ20 -> {
-                val list = current.eq20Gains.toMutableList()
-                if (bandIndex in list.indices) list[bandIndex] = gainDb
-                current.copy(eq20Gains = list)
-            }
-            EqMode.EQ32 -> {
-                val list = current.eq32Gains.toMutableList()
-                if (bandIndex in list.indices) list[bandIndex] = gainDb
-                current.copy(eq32Gains = list)
-            }
-        }
-        applyAndPersist(updated)
+        val list = current.eq32Gains.toMutableList()
+        if (bandIndex !in list.indices) return
+        list[bandIndex] = gainDb
+        applyAndPersist(current.copy(eqMode = EqMode.EQ32, eq32Gains = list))
     }
 
     fun resetEqGains() {
-        val current = dspConfig.value
-        val updated = when (current.eqMode) {
-            EqMode.EQ10 -> current.copy(eq10Gains = List(10) { 0f })
-            EqMode.EQ20 -> current.copy(eq20Gains = List(20) { 0f })
-            EqMode.EQ32 -> current.copy(eq32Gains = List(32) { 0f })
-        }
-        applyAndPersist(updated)
+        applyAndPersist(dspConfig.value.copy(eqMode = EqMode.EQ32, eq32Gains = List(32) { 0f }))
     }
 
     // ==========================================
