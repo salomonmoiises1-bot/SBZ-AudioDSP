@@ -1,46 +1,37 @@
-# AudioDSP Engine Pro — Android 14 / no-root build
+# sBz Next 1.0
 
-Native Android audio DSP project targeting API 34.
+Proyecto Android nativo Kotlin/Compose con un motor DSP PCM propio.
 
-## DSP engine
+## Motor
 
-The project keeps the original software DSP engine:
+La ruta de audio es:
 
-- 32-band RBJ biquad equalizer
-- Pre-gain
-- Bass boost
-- Bass / Mid / Treble tone stack
-- MDRC (3-band dynamic range compressor)
-- Auto Gain
-- Virtualizer / stereo widening
-- Master gain
-- Balance
-- Brickwall limiter
-- Peak/RMS metering
-- DataStore persistence and presets
+`AudioPlaybackCapture -> AudioRecord Float PCM estéreo -> DspEngine -> AudioTrack Float PCM estéreo`
 
-## Default audio route: native Android effect
+El `DspEngine` procesa el mismo buffer PCM y contiene:
 
-The default **Start DSP** action no longer creates a capture-and-replay loop. It attempts to attach Android's `DynamicsProcessing` effect to the global output-mix session and translates the app settings to the platform effect:
+1. Pre-Gain
+2. Bass Boost + Tone
+3. EQ32 Constant-Q, 32 Biquads
+4. MDRC de 4 bandas con crossovers configurables
+5. AutoGain / headroom
+6. Spatial / stereo width
+7. Balance
+8. Master Gain
+9. Limiter / anti-clipping
 
-- 32 native EQ bands
-- 3-band MBC
-- native limiter
-- per-channel input gain for master gain/balance
-- optional native Virtualizer when the device exposes it
+Los parámetros se mantienen fuera del hilo de audio y se aplican al motor sin crear objetos dentro de `process()`.
 
-This is the closest public Android API path to a no-root system equalizer. Android documents session 0/global output effects, but also marks global insert effects such as Equalizer/BassBoost/Virtualizer as deprecated. Device firmware therefore decides whether this route is available. The app reports a real error if Android rejects the effect; it does not claim that DSP is active when it is not.
+## Android playback capture
 
-The app's custom DSP engine remains in the project and is used by the explicit diagnostic capture path. That path uses MediaProjection + AudioPlaybackCapture + AudioTrack and is intentionally not the default because source audio may remain audible and produce a dry/processed mix on some devices.
+La captura de reproducción usa `MediaProjection` + `AudioPlaybackCaptureConfiguration` + `AudioRecord`. Android requiere permiso `RECORD_AUDIO` y consentimiento del usuario. Además, la aplicación que produce el audio puede impedir la captura.
 
-## Android 14 requirements
+**Limitación de plataforma:** AudioPlaybackCapture copia el audio reproducido por otra aplicación; no reemplaza silenciosamente su salida original. Por ello este proyecto no afirma ser un reemplazo global del mezclador de Android.
 
-The project targets/compiles against API 34 and uses Java/Kotlin 17. Android 14 requires foreground services to declare their service types and corresponding permissions.
+## Compilación
 
-## GitHub Actions
+GitHub Actions usa JDK 17 y Gradle 8.9 para `:app:assembleDebug`. El workflow publica `app-debug.apk` como artefacto.
 
-The repository did not include a Gradle wrapper, so CI uses the official Gradle Actions `setup-gradle` action to install Gradle 8.2.2 directly. Push the repository to GitHub and open **Actions**; the workflow builds `app-debug.apk` and publishes it as a workflow artifact.
+## Pruebas
 
-## Important device limitation
-
-No-root system-wide processing cannot be guaranteed uniformly across Android 14 devices. The public `AudioEffect` API exposes audio-session effects, while global output-mix insert effects are deprecated. OEM audio HAL/effect implementations can therefore accept, restrict, replace, or reject this path.
+Hay pruebas unitarias para finitud del procesamiento, limitación de amplitud y respuesta del EQ.
