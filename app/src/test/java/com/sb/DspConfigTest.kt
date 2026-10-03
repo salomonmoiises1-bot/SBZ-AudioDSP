@@ -11,7 +11,7 @@ class DspConfigTest {
         val config = DspConfig.DEFAULT
         assertTrue(config.dspEnabled)
         assertEquals(0f, config.preGain, 0.001f)
-        assertEquals(EqMode.EQ10, config.eqMode)
+        assertEquals(EqMode.EQ32, config.eqMode)
         assertEquals(10, config.eq10Gains.size)
         assertEquals(20, config.eq20Gains.size)
         assertEquals(32, config.eq32Gains.size)
@@ -49,17 +49,30 @@ class DspConfigTest {
             eq32Gains = List(32) { 3f }
         )
 
+        // EQ32 es el único banco activo del DSP; los bancos EQ10/EQ20 se
+        // mantienen intactos como datos de compatibilidad.
         assertEquals(3f, config.activeEqGains()[0], 0.001f)
         assertEquals(32, config.activeEqGains().size)
+        assertEquals(List(10) { 1f }, config.eq10Gains)
+        assertEquals(List(20) { 2f }, config.eq20Gains)
+        assertEquals(List(32) { 3f }, config.eq32Gains)
 
+        // Cambiar el selector legado no debe cambiar el banco DSP activo ni
+        // destruir los tres conjuntos de ganancias almacenados.
         val switchedTo10 = config.copy(eqMode = EqMode.EQ10)
-        assertEquals(1f, switchedTo10.activeEqGains()[0], 0.001f)
-        assertEquals(10, switchedTo10.activeEqGains().size)
+        assertEquals(EqMode.EQ10, switchedTo10.eqMode)
+        assertEquals(3f, switchedTo10.activeEqGains()[0], 0.001f)
+        assertEquals(32, switchedTo10.activeEqGains().size)
+        assertEquals(List(10) { 1f }, switchedTo10.eq10Gains)
+        assertEquals(List(20) { 2f }, switchedTo10.eq20Gains)
+        assertEquals(List(32) { 3f }, switchedTo10.eq32Gains)
 
-        // Cambiar de nuevo a EQ32 conserva los valores originales
         val restored32 = switchedTo10.copy(eqMode = EqMode.EQ32)
         assertEquals(3f, restored32.activeEqGains()[0], 0.001f)
         assertEquals(32, restored32.activeEqGains().size)
+        assertEquals(List(10) { 1f }, restored32.eq10Gains)
+        assertEquals(List(20) { 2f }, restored32.eq20Gains)
+        assertEquals(List(32) { 3f }, restored32.eq32Gains)
     }
 
     @Test

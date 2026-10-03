@@ -27,10 +27,11 @@ class AutoHeadroomTest {
 
     @Test
     fun testHeadroomReducesOnEqBoost() {
+        // SB usa actualmente EQ32 como único banco activo. EQ10/EQ20 se
+        // conservan solamente para compatibilidad con configuraciones antiguas.
         val eqBoosted = DspConfig.DEFAULT.copy(
             autoHeadroomEnabled = true,
-            eqMode = EqMode.EQ10,
-            eq10Gains = listOf(0f, 0f, 8.0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            eq32Gains = List(32) { index -> if (index == 2) 8.0f else 0f }
         )
         val headroom = HeadroomManager.calculateRequiredHeadroomDb(eqBoosted)
         assertTrue(headroom <= -8.0f)
