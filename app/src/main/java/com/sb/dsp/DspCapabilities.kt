@@ -11,8 +11,8 @@ data class DspCapabilities(
     val sessionId: Int = 0,
     val isSessionZeroSupported: Boolean = false,
 
-    // Legacy android.media.audiofx.Equalizer is intentionally NOT used by SB.
-    // These fields remain only for compatibility with existing UI/state models.
+    // Equalizer nativo: backend de compatibilidad cuando DynamicsProcessing no
+    // puede tomar control de la sesión global.
     val hasEqualizer: Boolean = false,
     val nativeEqBands: Int = 0,
     val nativeEqMinLevelMb: Short = -1500, // milibeles (-15dB)
