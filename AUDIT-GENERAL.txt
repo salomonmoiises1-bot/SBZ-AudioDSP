@@ -1,0 +1,29 @@
+SB-Android-DSP — Auditoría general
+
+BASE:
+- AGP 8.2.2
+- Kotlin 1.9.22
+- Gradle 8.5
+- JDK 17 en GitHub Actions
+
+CORREGIDO EN ESTA VERSIÓN:
+1. Falta de gradle-wrapper.jar: el workflow restaura el Wrapper oficial de Gradle 8.5 y verifica su SHA-256 antes de ejecutar Gradle.
+2. Error de compilación: DspEngine/PcmAudioPipeline llamaban ConstantQGraphicEq.updateConfig(), método inexistente. Se añadió updateConfig() con interpolación logarítmica para EQ10/EQ20 y aplicación directa para EQ32.
+
+HALLAZGOS IMPORTANTES PENDIENTES:
+1. PcmAudioPipeline no está conectado a una fuente PCM real: no existen llamadas a DspEngine.processPcm/processInterleaved fuera del propio engine. Por tanto, EQ32 Constant-Q y MdrcProcessor software no procesan actualmente el audio de otras apps.
+2. La ruta efectiva actual es AudioFX/HAL: DynamicsProcessing + Equalizer + BassBoost + Virtualizer.
+3. El EQ lógico de 32 bandas se reduce a las bandas físicas del Equalizer nativo mediante CapabilityAdapter; en un dispositivo con 5 bandas no son 32 filtros reales.
+4. AutoGain no mide LUFS/RMS: actualmente estima ganancia a partir de preGain/EQ. El nombre/documentación promete más de lo que implementa.
+5. La cadena PCM declara AutoGain después de MDRC, pero processBlock aplica autoGain junto con Pre-Gain antes de Bass Boost/Tone/EQ/MDRC. Debe resolverse cuando se conecte una ruta PCM real.
+6. MasterGainManager existe, pero DspEngine no lo usa en la ruta AudioFX; Master Gain/Balance son efectivos únicamente dentro de PcmAudioPipeline, que actualmente no está conectado.
+7. El software MDRC se usa para medidores/estado, pero no es el camino de audio cuando DynamicsProcessing está disponible.
+8. Los cambios de crossover MDRC provocan reconstrucción de DynamicsProcessing; es deliberado según la arquitectura, pero los sliders deben tener debounce/coalescing para evitar reconstrucciones excesivas.
+9. processInterleaved() crea arrays FloatArray por llamada, contradiciendo el comentario Zero Allocations. Debe optimizarse si se conecta a audio realtime.
+10. La detección de salud del watchdog considera sano el estado cuando DP y Equalizer no están disponibles, por lo que puede ocultar un fallo si no queda ningún efecto real.
+
+CONCLUSIÓN:
+- El fallo de Actions #74 no era del DSP: faltaba el Wrapper JAR.
+- Hay además un error Kotlin concreto que habría aparecido después del Wrapper.
+- No se modificó la arquitectura de audio ni se añadió captura/MediaProjection/RECORD_AUDIO.
+- Los hallazgos funcionales del pipeline PCM deben resolverse en una auditoría posterior, con especial cuidado de no romper el modelo AudioFX/HAL.
