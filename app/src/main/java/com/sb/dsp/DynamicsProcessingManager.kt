@@ -219,144 +219,16 @@ class DynamicsProcessingManager {
                 logicalGains
             )
 
-            // Tone is represented in the same physical EQ stage, but it must
-            // follow the actual 3-band tone curves (bass shelf, mid peaking,
-            // treble shelf). A linear interpolation of the three control points
-            // does not reproduce a tone control and can produce large, unintended
-            // gains between the controls.
-            gain += toneResponseDb(
+            // Tone controls are part of the same EQ stage so they are not
+            // accidentally applied twice by a second software filter.
+            gain += CapabilityAdapter.interpolateGainAtFrequency(
                 physicalFreqs[i],
-                lastConfig.toneBass,
-                lastConfig.toneMid,
-                lastConfig.toneTreble
+                listOf(100f, 1000f, 10000f),
+                listOf(lastConfig.toneBass, lastConfig.toneMid, lastConfig.toneTreble)
             )
             result[i] = gain.coerceIn(-15f, 15f)
         }
         return result
-    }
-
-    /**
-     * Returns the combined frequency response of the three Tone controls in dB.
-     *
-     * The real playback backend is DynamicsProcessing, so Tone cannot use the
-     * PCM ToneManager directly. Instead, its response is projected onto the
-     * physical EQ bands. The projection uses the same RBJ biquad equations as
-     * the software tone filters, rather than interpolating the three control
-     * values as if they were EQ-band gains.
-     */
-    private fun toneResponseDb(
-        frequencyHz: Float,
-        bassDb: Float,
-        midDb: Float,
-        trebleDb: Float
-    ): Float {
-        val f = frequencyHz.coerceIn(MIN_CUTOFF_HZ, 20000f)
-        return (
-            biquadMagnitudeDb(
-                f, 100f, 0.707f, bassDb, BiquadToneType.LOW_SHELF
-            ) +
-            biquadMagnitudeDb(
-                f, 1000f, 1.0f, midDb, BiquadToneType.PEAKING
-            ) +
-            biquadMagnitudeDb(
-                f, 10000f, 0.707f, trebleDb, BiquadToneType.HIGH_SHELF
-            )
-        ).coerceIn(-30f, 30f)
-    }
-
-    private enum class BiquadToneType {
-        LOW_SHELF,
-        PEAKING,
-        HIGH_SHELF
-    }
-
-    private fun biquadMagnitudeDb(
-        frequencyHz: Float,
-        centerHz: Float,
-        q: Float,
-        gainDb: Float,
-        type: BiquadToneType
-    ): Float {
-        if (!gainDb.isFinite() || kotlin.math.abs(gainDb) < 0.0001f) return 0f
-
-        val fs = 48000.0
-        val f0 = centerHz.coerceIn(10f, (fs * 0.475).toFloat()).toDouble()
-        val f = frequencyHz.coerceIn(10f, (fs * 0.475).toFloat()).toDouble()
-        val safeQ = q.coerceIn(0.1f, 40f).toDouble()
-        val gain = gainDb.coerceIn(-15f, 15f).toDouble()
-
-        val omega0 = 2.0 * kotlin.math.PI * f0 / fs
-        val sn = kotlin.math.sin(omega0)
-        val cs = kotlin.math.cos(omega0)
-        val alpha = sn / (2.0 * safeQ)
-        val a = kotlin.math.pow(10.0, gain / 40.0)
-
-        var b0: Double
-        var b1: Double
-        var b2: Double
-        var a0: Double
-        var a1: Double
-        var a2: Double
-
-        when (type) {
-            BiquadToneType.PEAKING -> {
-                b0 = 1.0 + alpha * a
-                b1 = -2.0 * cs
-                b2 = 1.0 - alpha * a
-                a0 = 1.0 + alpha / a
-                a1 = -2.0 * cs
-                a2 = 1.0 - alpha / a
-            }
-
-            BiquadToneType.LOW_SHELF -> {
-                val sqrtA = kotlin.math.sqrt(a)
-                val twoSqrtAAlpha = 2.0 * sqrtA * alpha
-                b0 = a * ((a + 1.0) - (a - 1.0) * cs + twoSqrtAAlpha)
-                b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cs)
-                b2 = a * ((a + 1.0) - (a - 1.0) * cs - twoSqrtAAlpha)
-                a0 = (a + 1.0) + (a - 1.0) * cs + twoSqrtAAlpha
-                a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cs)
-                a2 = (a + 1.0) + (a - 1.0) * cs - twoSqrtAAlpha
-            }
-
-            BiquadToneType.HIGH_SHELF -> {
-                val sqrtA = kotlin.math.sqrt(a)
-                val twoSqrtAAlpha = 2.0 * sqrtA * alpha
-                b0 = a * ((a + 1.0) + (a - 1.0) * cs + twoSqrtAAlpha)
-                b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cs)
-                b2 = a * ((a + 1.0) + (a - 1.0) * cs - twoSqrtAAlpha)
-                a0 = (a + 1.0) - (a - 1.0) * cs + twoSqrtAAlpha
-                a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cs)
-                a2 = (a + 1.0) - (a - 1.0) * cs - twoSqrtAAlpha
-            }
-        }
-
-        if (!a0.isFinite() || kotlin.math.abs(a0) < 1e-12) return 0f
-
-        b0 /= a0
-        b1 /= a0
-        b2 /= a0
-        a1 /= a0
-        a2 /= a0
-
-        val omega = 2.0 * kotlin.math.PI * f / fs
-        val c1 = kotlin.math.cos(omega)
-        val s1 = kotlin.math.sin(omega)
-        val c2 = kotlin.math.cos(2.0 * omega)
-        val s2 = kotlin.math.sin(2.0 * omega)
-
-        val numRe = b0 + b1 * c1 + b2 * c2
-        val numIm = -(b1 * s1 + b2 * s2)
-        val denRe = 1.0 + a1 * c1 + a2 * c2
-        val denIm = -(a1 * s1 + a2 * s2)
-
-        val numPower = numRe * numRe + numIm * numIm
-        val denPower = denRe * denRe + denIm * denIm
-        if (!numPower.isFinite() || !denPower.isFinite() || denPower <= 1e-20) return 0f
-
-        return (10.0 * kotlin.math.log10((numPower / denPower).coerceAtLeast(1e-20)))
-            .toFloat()
-            .coerceIn(-15f, 15f)
     }
 
     fun applyConfig(config: DspConfig, autoHeadroomDb: Float = 0f, autoGainDb: Float = 0f) {
