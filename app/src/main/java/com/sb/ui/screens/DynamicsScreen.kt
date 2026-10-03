@@ -25,7 +25,6 @@ import com.sb.ui.theme.*
 @Composable
 fun DynamicsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val config by viewModel.dspConfig.collectAsState()
-    val grValues by viewModel.mdrcGainReduction.collectAsState()
 
     var selectedBandIndex by remember { mutableStateOf(0) }
     val bandNames = listOf("LOW", "LOW-MID", "MID-HIGH", "HIGH")
@@ -75,72 +74,6 @@ fun DynamicsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 enabled = config.dspEnabled,
                 colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
             )
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // VÚMETROS REALES DE REDUCCIÓN DE GANANCIA (GAIN REDUCTION METERS)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Medidores de Reducción de Ganancia (GR en dB)",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    bandNames.forEachIndexed { idx, name ->
-                        val grDb = if (idx < grValues.size) grValues[idx] else 0f
-                        val progress = (-grDb / 18f).coerceIn(0f, 1f)
-
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(SurfaceElevated)
-                                .padding(8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(name, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = AccentCyan)
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            // Barra vertical de GR invertida (rojo/ámbar al comprimir)
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(50.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0xFF0F172A)),
-                                contentAlignment = Alignment.BottomCenter
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .fillMaxHeight(progress)
-                                        .background(if (grDb < -6f) AccentRed else if (grDb < -1f) AccentAmber else AccentGreen)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = String.format("%.1f dB", grDb),
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                color = if (grDb < -0.1f) AccentAmber else TextTertiary
-                            )
-                        }
-                    }
-                }
-            }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
