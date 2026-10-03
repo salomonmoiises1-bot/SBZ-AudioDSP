@@ -1,6 +1,6 @@
 # SB — Procesador DSP de Audio Nativo para Android
 
-**SB** es un procesador y controlador DSP de audio nativo de alto rendimiento para el sistema operativo Android (API 28+ / Android 9.0 a Android 14+), desarrollado exclusivamente con **Kotlin** y **Jetpack Compose**, tomando como referencia arquitectónica y funcional el proyecto `Equalizer314`.
+**SB** es un procesador y controlador DSP de audio nativo de alto rendimiento para el sistema operativo Android (API 28+ / Android 9.0 a Android 14+), desarrollado exclusivamente con **Kotlin** y **Jetpack Compose**, con una arquitectura propia orientada al procesamiento DSP system-wide.
 
 > **NOTA DE ARQUITECTURA:** SB es una aplicación **100% nativa de Android** (`com.sb`). No es un sitio ni una aplicación web. Interactúa directamente con la capa HAL (Hardware Abstraction Layer) de Android y el kernel de audio a través de los servicios nativos `android.media.audiofx.DynamicsProcessing`, `android.media.audiofx.Equalizer`, `android.media.audiofx.BassBoost` y `android.media.audiofx.Virtualizer`.
 

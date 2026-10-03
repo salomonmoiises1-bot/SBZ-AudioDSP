@@ -8,7 +8,7 @@ BASE
 - GitHub Actions: Gradle 8.5 + JDK 17
 
 CRITERIO
-La ruta de audio externo se audita como una aplicación system-wide: el audio de otras apps no se entrega como PCM a SB. Por eso la ruta real debe pasar por AudioEffect/DynamicsProcessing, igual que el enfoque system-wide documentado por Equalizer314. El pipeline PCM propio se conserva sólo para consumidores que realmente entreguen PCM al motor.
+La ruta de audio externo se audita como una aplicación system-wide: el audio de otras apps no se entrega como PCM a SB. Por eso la ruta real debe pasar por AudioEffect/DynamicsProcessing. El pipeline PCM propio se conserva sólo para consumidores que realmente entreguen PCM al motor.
 
 CORRECCIONES APLICADAS
 1. DynamicsProcessing pasa a ser el backend principal del EQ, MBC y limiter cuando está disponible.
