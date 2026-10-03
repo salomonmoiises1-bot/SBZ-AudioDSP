@@ -302,7 +302,7 @@ class DspEngine(private val sampleRate: Int) {
             val cfg = dp.config
 
             val channels =
-                cfg.getChannelCount()
+                dp.getChannelCount()
                     .coerceAtLeast(1)
 
             val bandCount =
@@ -965,3 +965,7 @@ class DspEngine(private val sampleRate: Int) {
         )
     }
 }
+
+Único cambio respecto a tu archivo: "cfg.getChannelCount()" ahora es "dp.getChannelCount()".
+
+Después de reemplazarlo, ejecuta nuevamente el GitHub Actions.
