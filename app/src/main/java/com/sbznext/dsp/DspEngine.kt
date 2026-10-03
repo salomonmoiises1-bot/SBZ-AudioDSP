@@ -301,6 +301,10 @@ class DspEngine(private val sampleRate: Int) {
         runCatching {
             val cfg = dp.config
 
+            /*
+             * Read the actual channel count from the live
+             * DynamicsProcessing instance, not from Config.
+             */
             val channels =
                 dp.getChannelCount()
                     .coerceAtLeast(1)
@@ -965,7 +969,3 @@ class DspEngine(private val sampleRate: Int) {
         )
     }
 }
-
-Único cambio respecto a tu archivo: "cfg.getChannelCount()" ahora es "dp.getChannelCount()".
-
-Después de reemplazarlo, ejecuta nuevamente el GitHub Actions.
