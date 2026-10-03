@@ -50,6 +50,37 @@ class ConstantQGraphicEq(
     }
 
     /**
+     * Aplica la configuración lógica actual al motor Constant-Q.
+     *
+     * El pipeline PCM mantiene un banco físico de 32 filtros. Si el modo lógico
+     * es EQ10/EQ20, las ganancias se interpolan logarítmicamente sobre las
+     * frecuencias EQ32; EQ32 se aplica directamente.
+     */
+    fun updateConfig(config: DspConfig) {
+        if (!config.dspEnabled) {
+            setGains(emptyList())
+            return
+        }
+
+        val sourceFreqs = config.activeEqFrequencies()
+        val sourceGains = config.activeEqGains()
+
+        if (sourceFreqs.size == frequencies.size && sourceFreqs == frequencies) {
+            setGains(sourceGains)
+            return
+        }
+
+        val mapped = frequencies.map { target ->
+            CapabilityAdapter.interpolateGainAtFrequency(
+                targetFreq = target,
+                sourceFreqs = sourceFreqs,
+                sourceGains = sourceGains
+            )
+        }
+        setGains(mapped)
+    }
+
+    /**
      * Procesa una muestra estéreo a través de toda la cascada serie de filtros Constant-Q.
      */
     fun processSample(sampleL: Float, sampleR: Float): Pair<Float, Float> {
