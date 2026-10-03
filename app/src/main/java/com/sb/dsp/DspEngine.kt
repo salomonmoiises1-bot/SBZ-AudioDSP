@@ -1,6 +1,7 @@
 package com.sb.dsp
 
 import android.content.Context
+import android.media.AudioManager
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -127,6 +128,14 @@ class DspEngine(
         activeSessionId = sessionId
 
         try {
+            try {
+                context.getSystemService(AudioManager::class.java)
+                    ?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
+                    ?.toFloatOrNull()
+                    ?.takeIf { it > 0f }
+                    ?.let { dynamicsProcessingManager.setOutputSampleRateHz(it) }
+            } catch (_: Throwable) {}
+
             val dpOk = dynamicsProcessingManager.initialize(
                 sessionId,
                 initialConfig = _config.value

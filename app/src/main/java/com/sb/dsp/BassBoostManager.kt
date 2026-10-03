@@ -22,7 +22,7 @@ class BassBoostManager {
     /**
      * Inicializa el efecto BassBoost para la sesión de audio especificada.
      */
-    fun initialize(audioSessionId: Int, priority: Int = 1000): Boolean {
+    fun initialize(audioSessionId: Int, priority: Int = Int.MAX_VALUE): Boolean {
         release()
         return try {
             val bb = BassBoost(priority, audioSessionId)

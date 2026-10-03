@@ -27,7 +27,7 @@ class VirtualizerManager {
     var isStrengthSupported: Boolean = false
         private set
 
-    fun initialize(audioSessionId: Int, priority: Int = 1000): Boolean {
+    fun initialize(audioSessionId: Int, priority: Int = Int.MAX_VALUE): Boolean {
         release()
         return try {
             val v = Virtualizer(priority, audioSessionId)
