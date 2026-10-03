@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Seguimiento de sesiones únicamente para diagnóstico.
  *
- * SB funciona en modo global, igual que el modo system-wide de Equalizer314:
+ * SB funciona en modo global, utilizando el procesamiento de audio del sistema:
  * DynamicsProcessing se mantiene en sesión 0 y los cambios de una app concreta
  * no hacen que el motor salte a la sesión privada de esa app.
  */
