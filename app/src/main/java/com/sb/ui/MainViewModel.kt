@@ -11,6 +11,7 @@ import com.sb.diagnostics.DiagnosticsReport
 import com.sb.dsp.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 /**
  * MainViewModel: Conexión entre Jetpack Compose y el motor DspEngine / PresetRepository.
@@ -30,6 +31,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _presets = MutableStateFlow<List<Preset>>(PresetRepository.FACTORY_PRESETS)
     val presets: StateFlow<List<Preset>> = _presets.asStateFlow()
+
+    private var persistenceJob: Job? = null
 
     private val _diagnostics = MutableStateFlow(
         AudioEffectsDiagnostics.generateReport(
@@ -210,7 +213,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ==========================================
 
     fun loadPreset(preset: Preset) {
-        applyAndPersist(preset.config)
+        applyAndPersist(preset.config, immediatePersist = true)
     }
 
     /**
@@ -243,11 +246,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dspEngine.recover("Recuperación manual solicitada por el usuario")
     }
 
-    private fun applyAndPersist(config: DspConfig) {
+    private fun applyAndPersist(config: DspConfig, immediatePersist: Boolean = false) {
         val sanitized = config.validate()
         dspEngine.updateConfig(sanitized)
-        viewModelScope.launch {
-            presetRepository.saveActiveConfig(sanitized)
+
+        persistenceJob?.cancel()
+        if (immediatePersist) {
+            persistenceJob = viewModelScope.launch {
+                presetRepository.saveActiveConfig(sanitized)
+            }
+        } else {
+            // Evita una escritura DataStore por cada frame de un slider.
+            persistenceJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(180L)
+                presetRepository.saveActiveConfig(sanitized)
+            }
         }
     }
 }
