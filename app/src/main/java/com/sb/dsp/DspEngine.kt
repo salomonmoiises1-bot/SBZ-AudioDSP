@@ -53,6 +53,7 @@ class DspEngine(
     private val bassBoostManager = BassBoostManager()
     private val virtualizerManager = VirtualizerManager()
     private val autoGainManager = AutoGainManager()
+    private val visualizerManager = VisualizerManager()
     private val toneManager = ToneManager()
 
     private var activeSessionId: Int = GLOBAL_SESSION_ID
@@ -103,6 +104,7 @@ class DspEngine(
                     // 1. Inicializar efectos HAL (si están disponibles)
                     val dpOk = dynamicsProcessingManager.initialize(sessionId, initialConfig = _config.value)
                     val eqOk = equalizerManager.initialize(sessionId)
+                    visualizerManager.initialize(sessionId)
                     val bbOk = bassBoostManager.initialize(sessionId)
                     val virtOk = virtualizerManager.initialize(sessionId)
 
@@ -200,7 +202,8 @@ class DspEngine(
             val headroomDb = HeadroomManager.calculateRequiredHeadroomDb(config)
 
             // 2. Auto Gain
-            val autoGainDb = autoGainManager.calculateEffectiveGain(config, headroomDb)
+            val measuredRmsDb = visualizerManager.currentRmsDb
+            val autoGainDb = autoGainManager.calculateEffectiveGain(config, headroomDb, measuredRmsDb)
 
             // 3. Aplicar al pipeline PCM nativo (MDRC, EQ32, etc.)
             pcmPipeline.mdrcProcessor.updateConfig(config)
@@ -268,6 +271,7 @@ class DspEngine(
         bassBoostManager.release()
         virtualizerManager.release()
         autoGainManager.reset()
+        visualizerManager.release()
         toneManager.reset()
         pcmPipeline.mdrcProcessor.reset()
         isInitialized = false

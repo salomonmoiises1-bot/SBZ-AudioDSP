@@ -18,7 +18,8 @@ class AutoGainManager {
      */
     fun calculateEffectiveGain(
         config: DspConfig,
-        autoHeadroomDb: Float
+        autoHeadroomDb: Float,
+        measuredRmsDb: Float = -96f
     ): Float {
         if (!config.autoGainEnabled) {
             currentCompensatedGainDb = 0f
@@ -33,8 +34,12 @@ class AutoGainManager {
         }
 
         val netInputGain = config.preGain + (avgEqGain * 0.5f)
-        // Ganancia requerida para llevar la señal al objetivo relativo (ej. -14 LUFS)
-        val targetDelta = -netInputGain
+        // Usa medición real del Visualizer cuando está disponible; conserva el cálculo anterior como fallback.
+        val targetDelta = if (measuredRmsDb > -95f) {
+            (-14f - measuredRmsDb).coerceIn(-12f, 6f)
+        } else {
+            -netInputGain
+        }
 
         // Limitar la ganancia makeup entre -12 dB y +6 dB
         val clampedTarget = targetDelta.coerceIn(-12f, 6f)
