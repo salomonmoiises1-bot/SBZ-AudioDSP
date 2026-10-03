@@ -243,8 +243,7 @@ class PresetRepository(private val context: Context) {
     fun deserializeConfig(jsonStr: String): DspConfig {
         return try {
             val root = JSONObject(jsonStr)
-            val eqModeStr = root.optString("eqMode", EqMode.EQ10.name)
-            val eqMode = try { EqMode.valueOf(eqModeStr) } catch (e: Exception) { EqMode.EQ10 }
+            val eqMode = EqMode.EQ32
 
             val eq10 = parseGainsArray(root.optJSONArray("eq10Gains"), 10)
             val eq20 = parseGainsArray(root.optJSONArray("eq20Gains"), 20)
