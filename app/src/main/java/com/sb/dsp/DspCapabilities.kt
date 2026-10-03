@@ -11,7 +11,8 @@ data class DspCapabilities(
     val sessionId: Int = 0,
     val isSessionZeroSupported: Boolean = false,
 
-    // Ecualizador Nativo de Android (android.media.audiofx.Equalizer)
+    // Legacy android.media.audiofx.Equalizer is intentionally NOT used by SB.
+    // These fields remain only for compatibility with existing UI/state models.
     val hasEqualizer: Boolean = false,
     val nativeEqBands: Int = 0,
     val nativeEqMinLevelMb: Short = -1500, // milibeles (-15dB)
@@ -47,7 +48,7 @@ data class DspCapabilities(
     fun getSummaryDescription(): String = buildString {
         append("Android $androidVersion (API $sdkInt) - $deviceManufacturer $deviceModel\n")
         append("DynamicsProcessing: ${if (hasDynamicsProcessing) "Disponible (MBC: $mbcBandCount bandas, Limiter: $hasLimiter)" else "No soportado"}\n")
-        append("Equalizer Nativo: ${if (hasEqualizer) "$nativeEqBands bandas (${nativeEqMinLevelMb/100}dB a +${nativeEqMaxLevelMb/100}dB)" else "No disponible"}\n")
+        append("DP Pre-EQ físico: ${if (hasDynamicsProcessing && preEqBandCount > 0) "$preEqBandCount bandas" else "No disponible"}\n")
         append("BassBoost: ${if (hasBassBoost) "Disponible" else "No disponible"}, Virtualizer: ${if (hasVirtualizer) "Disponible" else "No disponible"}\n")
         append("Ruta Global (Sesión 0): ${if (isSessionZeroSupported) "Permitida" else "Restringida por fabricante"}")
     }

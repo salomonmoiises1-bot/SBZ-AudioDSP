@@ -110,11 +110,11 @@ object CapabilityAdapter {
 
         val hwBands = capabilities.effectiveHardwareEqBands
         return if (hwBands == 0) {
-            "Aviso: Ningún ecualizador por hardware disponible en esta sesión."
-        } else if (hwBands >= logicalCount) {
-            "Mapeo 1:1 directo: Las $logicalCount bandas lógicas se procesan en $hwBands bandas físicas."
+            "Aviso: DynamicsProcessing no expone bandas físicas utilizables en esta sesión."
+        } else if (hwBands == logicalCount) {
+            "Mapeo 1:1: las $logicalCount bandas lógicas coinciden con las $hwBands bandas físicas de DP."
         } else {
-            "Mapeo acústico adaptativo: $logicalCount bandas lógicas proyectadas logarítmicamente sobre $hwBands bandas físicas reales de Android."
+            "Mapeo acústico adaptativo: $logicalCount bandas lógicas proyectadas logarítmicamente sobre $hwBands bandas físicas de DynamicsProcessing."
         }
     }
 }

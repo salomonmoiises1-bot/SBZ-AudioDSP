@@ -14,8 +14,8 @@ import kotlin.math.abs
  *
  * La aplicación no recibe el PCM de otras apps; por eso la ruta de reproducción
  * global se realiza mediante AudioEffect/DynamicsProcessing sobre la sesión 0.
- * El pipeline PCM de PcmAudioPipeline queda disponible únicamente para llamadas
- * directas de procesamiento PCM y no se ejecuta en paralelo con los AudioEffects.
+ * No existe una fuente PCM propia: el procesamiento se realiza directamente en
+ * la cadena global de Android mediante AudioEffect/DynamicsProcessing.
  *
  * La estructura de DynamicsProcessing (número de bandas/etapas) se crea una sola
  * vez. Los parámetros de ganancia, MBC y limiter se actualizan en tiempo real.
@@ -27,13 +27,23 @@ class DynamicsProcessingManager {
         private const val TAG = "SB_DynamicsProcessing"
         const val MBC_BAND_COUNT = 4
         const val MAX_LOGICAL_EQ_BANDS = 32
+        /**
+         * Hard ceiling for the physical DP Pre-EQ layout created by SB.
+         * EQ32 is the logical UI model; SB must never request 128 physical bands.
+         * The runtime still probes downward because Android/vendor implementations
+         * may reject a requested band count and expose a smaller usable layout.
+         */
+        const val MAX_PHYSICAL_EQ_BANDS = 32
         private const val MIN_EQ_WRITE_SPACING_MS = 24L
         private const val MIN_CUTOFF_HZ = 20f
         private const val MAX_CUTOFF_HZ = 22000f
 
-        // Android/vendor implementations vary. Try the requested 32 bands first,
-        // then progressively fall back to a smaller physical layout.
-        private val EQ_BAND_CANDIDATES = intArrayOf(32, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1)
+        // DynamicsProcessing lets the app choose the physical Pre-EQ layout.
+        // Keep that layout bounded to SB's EQ32 ceiling; never manufacture a
+        // 64/128+ band input merely because the UI has a logical EQ model.
+        private val EQ_BAND_CANDIDATES = intArrayOf(
+            MAX_PHYSICAL_EQ_BANDS, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1
+        )
     }
 
     data class BackendInfo(
@@ -181,10 +191,13 @@ class DynamicsProcessingManager {
         return builder.build()
     }
 
-    /** Log-spaced physical centers, matching the way a logical graphic EQ is projected. */
+    /**
+     * Log-spaced physical centers used only for the actual DP bands that were
+     * successfully created. Logical EQ frequencies remain independent.
+     */
     private fun buildPhysicalEqFrequencies(count: Int): FloatArray {
         if (count <= 1) return floatArrayOf(1000f)
-        val minLog = kotlin.math.ln(20f)
+        val minLog = kotlin.math.ln(16f)
         val maxLog = kotlin.math.ln(20000f)
         return FloatArray(count) { index ->
             kotlin.math.exp(minLog + (maxLog - minLog) * index / (count - 1).toFloat())
