@@ -50,7 +50,7 @@ class DynamicsProcessingManager {
 
         return try {
             val builder = DynamicsProcessing.Config.Builder(
-                DynamicsProcessing.Config.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
                 2, // Canales estéreo
                 true, PRE_EQ_BAND_COUNT, // Pre-EQ habilitado
                 true, MBC_BAND_COUNT,    // MBC habilitado (4 bandas MDRC)
@@ -68,6 +68,21 @@ class DynamicsProcessingManager {
             )
 
             for (ch in 0..1) {
+                val preEq = DynamicsProcessing.Eq(
+                    true,
+                    true,
+                    PRE_EQ_BAND_COUNT
+                )
+                for (b in 0 until PRE_EQ_BAND_COUNT) {
+                    preEq.setBand(b, DynamicsProcessing.EqBand(true, 100f, 0f))
+                }
+                builder.setPreEqByChannelIndex(ch, preEq)
+
+                val mbc = DynamicsProcessing.Mbc(
+                    true,
+                    initialConfig.mdrcEnabled,
+                    MBC_BAND_COUNT
+                )
                 for (b in 0 until MBC_BAND_COUNT) {
                     val bandCfg = initialBands[b]
                     val mbcBand = DynamicsProcessing.MbcBand(
@@ -83,8 +98,9 @@ class DynamicsProcessingManager {
                         bandCfg.preGain,
                         bandCfg.postGain
                     )
-                    builder.setMbcBand(ch, b, mbcBand)
+                    mbc.setBand(b, mbcBand)
                 }
+                builder.setMbcByChannelIndex(ch, mbc)
             }
 
             val dpConfig = builder.build()
@@ -138,19 +154,19 @@ class DynamicsProcessingManager {
             for (ch in 0..1) {
                 // Banda 0: Bass Shelf (100 Hz) + ToneBass
                 val b0 = DynamicsProcessing.EqBand(true, 100f, netPreGain + config.toneBass)
-                dp.setPreEqBand(ch, 0, b0)
+                dp.setPreEqBandByChannelIndex(ch, 0, b0)
 
                 // Banda 1: Mid Peaking (1000 Hz) + ToneMid
                 val b1 = DynamicsProcessing.EqBand(true, 1000f, netPreGain + config.toneMid)
-                dp.setPreEqBand(ch, 1, b1)
+                dp.setPreEqBandByChannelIndex(ch, 1, b1)
 
                 // Banda 2: Treble Shelf (10000 Hz) + ToneTreble
                 val b2 = DynamicsProcessing.EqBand(true, 10000f, netPreGain + config.toneTreble)
-                dp.setPreEqBand(ch, 2, b2)
+                dp.setPreEqBandByChannelIndex(ch, 2, b2)
 
                 // Banda 3: Ganancia general transparente
                 val b3 = DynamicsProcessing.EqBand(true, 500f, netPreGain)
-                dp.setPreEqBand(ch, 3, b3)
+                dp.setPreEqBandByChannelIndex(ch, 3, b3)
             }
 
             // 2. APLICAR MBC / MDRC (4 Bandas: Low, Low-Mid, High-Mid, High)
@@ -174,7 +190,7 @@ class DynamicsProcessingManager {
                         bandConfig.preGain,
                         bandConfig.postGain
                     )
-                    dp.setMbcBand(ch, bIndex, mbcBand)
+                    dp.setMbcBandByChannelIndex(ch, bIndex, mbcBand)
                 }
             }
 
@@ -190,7 +206,7 @@ class DynamicsProcessingManager {
                     config.limiterThreshold,
                     0f // postGain
                 )
-                dp.setLimiter(ch, limiter)
+                dp.setLimiterByChannelIndex(ch, limiter)
             }
 
         } catch (e: Exception) {
