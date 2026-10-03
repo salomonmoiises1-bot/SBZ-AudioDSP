@@ -1,5 +1,7 @@
 package com.sbznext.dsp
 
+import android.media.audiofx.DynamicsProcessing
+import android.media.audiofx.Virtualizer
 import kotlin.math.*
 
 /**
@@ -14,6 +16,8 @@ class DspEngine(private val sampleRate: Int) {
         private const val MIN_DB = -96f
         private const val MAX_DB = 24f
         private const val EPS = 1e-8f
+        const val GLOBAL_AUDIO_SESSION = 0
+        const val EFFECT_PRIORITY = 100
     }
 
     private val nyquist = (sampleRate * 0.5f)
@@ -32,6 +36,9 @@ class DspEngine(private val sampleRate: Int) {
     @Volatile private var config = DspConfig()
     @Volatile private var pendingConfig: DspConfig? = null
 
+    private var dynamics: DynamicsProcessing? = null
+    private var virtualizer: Virtualizer? = null
+
     @Volatile var lastPeak = 0f
         private set
     @Volatile var lastAutoGainDb = 0f
@@ -46,8 +53,146 @@ class DspEngine(private val sampleRate: Int) {
         apply(config)
     }
 
+    /**
+     * Starts the system-wide effect path. No AudioRecord/AudioTrack is created here:
+     * Android's mixer remains the single audio path, so the processed signal is not
+     * mixed with a delayed copy of the original.
+     */
+    @Synchronized
+    fun start() {
+        if (dynamics != null) return
+        if (android.os.Build.VERSION.SDK_INT < 28) {
+            throw UnsupportedOperationException("DynamicsProcessing requiere Android 9+")
+        }
+
+        val dp = DynamicsProcessing(EFFECT_PRIORITY, GLOBAL_AUDIO_SESSION, null)
+        dp.enabled = true
+        dynamics = dp
+
+        runCatching {
+            val v = Virtualizer(EFFECT_PRIORITY, GLOBAL_AUDIO_SESSION)
+            virtualizer = v
+        }
+        applyNative(config)
+    }
+
+    @Synchronized
+    fun release() {
+        runCatching { virtualizer?.enabled = false }
+        runCatching { virtualizer?.release() }
+        virtualizer = null
+        runCatching { dynamics?.enabled = false }
+        runCatching { dynamics?.release() }
+        dynamics = null
+    }
+
+    private fun applyNative(c: DspConfig) {
+        val dp = dynamics ?: return
+        runCatching {
+            dp.enabled = c.enabled
+
+            val cfg = dp.config
+            val channels = dp.channelCount.coerceAtLeast(1)
+            val preCount = cfg.preEqBandCount
+            val postCount = cfg.postEqBandCount
+
+            for (i in 0 until preCount) {
+                val band = cfg.getPreEqBandByChannelIndex(0, i)
+                val hz = band.cutoffFrequency.coerceAtLeast(20f)
+                band.gain = nativeEqGain(c, hz) * if (preCount > 0 && postCount > 0) 0.5f else 1f
+                band.enabled = c.eqEnabled
+                for (ch in 0 until channels) dp.setPreEqBandByChannelIndex(ch, i, band)
+            }
+
+            for (i in 0 until postCount) {
+                val band = cfg.getPostEqBandByChannelIndex(0, i)
+                val hz = band.cutoffFrequency.coerceAtLeast(20f)
+                band.gain = nativeEqGain(c, hz) * if (preCount > 0 && postCount > 0) 0.5f else 1f
+                band.enabled = c.eqEnabled
+                for (ch in 0 until channels) dp.setPostEqBandByChannelIndex(ch, i, band)
+            }
+
+            val autoCompensation = if (c.autoGainEnabled) {
+                var maxPositive = 0f
+                for (hz in DspConfig.FREQUENCIES) {
+                    maxPositive = max(maxPositive, nativeEqGain(c, hz))
+                }
+                (-maxPositive - c.autoGainHeadroomDb).coerceIn(-24f, 0f)
+            } else 0f
+            val baseGain = c.preGainDb + c.masterGainDb + autoCompensation
+            val leftGain = baseGain + if (c.balance < 0f) 20f * log10((1f + c.balance).coerceAtLeast(0.001f)) else 0f
+            val rightGain = baseGain + if (c.balance > 0f) 20f * log10((1f - c.balance).coerceAtLeast(0.001f)) else 0f
+            if (channels > 0) dp.setInputGainbyChannel(0, leftGain.coerceIn(-24f, 24f))
+            if (channels > 1) dp.setInputGainbyChannel(1, rightGain.coerceIn(-24f, 24f))
+            for (ch in 2 until channels) dp.setInputGainbyChannel(ch, baseGain.coerceIn(-24f, 24f))
+
+            val mbcCount = cfg.mbcBandCount
+            for (i in 0 until mbcCount) {
+                val band = cfg.getMbcBandByChannelIndex(0, i)
+                val cutoff = c.mdrcCutoffsHz.getOrElse(i) { c.mdrcCutoffsHz.last() }
+                band.cutoffFrequency = cutoff.coerceAtLeast(20f)
+                val p = c.mdrcBands.getOrElse(i.coerceAtMost(3)) { MdrcBand() }
+                band.enabled = c.mdrcEnabled
+                band.attackTime = p.attackMs
+                band.releaseTime = p.releaseMs
+                band.ratio = p.ratio
+                band.threshold = p.thresholdDb
+                band.preGain = 0f
+                band.postGain = p.makeupDb
+                for (ch in 0 until channels) dp.setMbcBandByChannelIndex(ch, i, band)
+            }
+
+            for (ch in 0 until channels) {
+                val lim = cfg.getLimiterByChannelIndex(ch)
+                lim.enabled = c.limiterEnabled
+                lim.threshold = c.limiterCeilingDb
+                lim.ratio = 20f
+                lim.attackTime = 1f
+                lim.releaseTime = 80f
+                lim.postGain = 0f
+                dp.setLimiterByChannelIndex(ch, lim)
+            }
+
+            dp.setEnabled(c.enabled)
+        }
+
+        runCatching {
+            val v = virtualizer ?: return@runCatching
+            v.enabled = c.spatialEnabled
+            if (v.strengthSupported) {
+                v.setStrength((c.spatialWidth.coerceIn(0f, 1f) * 1000f).roundToInt().toShort())
+            }
+        }
+    }
+
+    private fun nativeEqGain(c: DspConfig, hz: Float): Float {
+        val f = DspConfig.FREQUENCIES
+        val g = c.eqGainsDb
+        if (!c.eqEnabled) return 0f
+
+        var eqGain = if (hz <= f.first()) g.first() else if (hz >= f.last()) g.last() else {
+            var idx = 0
+            while (idx < f.lastIndex && f[idx + 1] < hz) idx++
+            val loF = ln(f[idx].toDouble())
+            val hiF = ln(f[idx + 1].toDouble())
+            val t = ((ln(hz.toDouble()) - loF) / (hiF - loF)).toFloat()
+            g[idx] + (g[idx + 1] - g[idx]) * t
+        }
+
+        val tone = when {
+            hz < 250f -> c.bassBoostDb + c.toneBassDb
+            hz < 3000f -> c.toneMidDb
+            else -> c.toneTrebleDb
+        }
+        return (eqGain + tone).coerceIn(-24f, 24f)
+    }
+
     fun update(c: DspConfig) {
-        pendingConfig = sanitize(c)
+        val sanitized = sanitize(c)
+        config = sanitized
+        pendingConfig = sanitized
+        apply(sanitized)
+        applyNative(sanitized)
     }
 
     fun snapshot(): DspConfig = config
@@ -119,6 +264,7 @@ class DspEngine(private val sampleRate: Int) {
             config = pending
             pendingConfig = null
             apply(pending)
+            applyNative(pending)
         }
 
         val c = config
