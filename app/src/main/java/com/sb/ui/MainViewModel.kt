@@ -26,6 +26,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val dspConfig: StateFlow<DspConfig> = dspEngine.config
     val dspCapabilities: StateFlow<DspCapabilities> = dspEngine.capabilities
 
+    // Medición en tiempo real de Gain Reduction de las 4 bandas MDRC
+    val mdrcGainReduction: StateFlow<FloatArray> = dspEngine.mdrcGainReduction
+
     private val _presets = MutableStateFlow<List<Preset>>(PresetRepository.FACTORY_PRESETS)
     val presets: StateFlow<List<Preset>> = _presets.asStateFlow()
 
