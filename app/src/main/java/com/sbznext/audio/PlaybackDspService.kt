@@ -46,7 +46,15 @@ class PlaybackDspService:Service(){
         record!!.startRecording(); track!!.play()
         worker=Thread({
             val buf=FloatArray(2048)
-            try{while(running){val n=record?.read(buf,0,buf.size,AudioRecord.READ_BLOCKING)?:-1;if(n>0){dsp.process(buf);track?.write(buf,0,n,AudioTrack.WRITE_BLOCKING)}else if(n<0)break}}
+            try{while(running){val n=record?.read(buf,0,buf.size,AudioRecord.READ_BLOCKING)?:-1;if(n>0){
+                        dsp.process(buf)
+                        var written=0
+                        while(written<n && running){
+                            val w=track?.write(buf,written,n-written,AudioTrack.WRITE_BLOCKING)?:-1
+                            if(w<=0) break
+                            written+=w
+                        }
+                    }else if(n<0)break}}
             catch(_:InterruptedException){}
             catch(_:Throwable){stopSelf()}
         },"sBzNext-AudioThread").also{it.priority=Thread.MAX_PRIORITY;it.start()}
