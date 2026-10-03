@@ -1,9 +1,13 @@
 package com.sb
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.core.app.ActivityCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -35,7 +39,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Iniciar servicio en primer plano persistente
+        // Solicitar la única autorización de ejecución que Android 13+
+        // presenta al usuario: notificaciones.
+        // MODIFY_AUDIO_SETTINGS es un permiso normal: Android lo concede
+        // automáticamente al instalar y no muestra diálogo runtime.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                1001
+            )
+        }
+
+        // Iniciar servicio en primer plano persistente después de registrar la
+        // solicitud de permiso. El servicio mantiene el DSP activo.
         SbAudioService.startService(this)
 
         setContent {
